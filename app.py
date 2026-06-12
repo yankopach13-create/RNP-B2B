@@ -56,7 +56,7 @@ def _render_uploader_help(image_name: str, caption: str = "") -> None:
 # Streamlit-приложение
 # --------------------------------------------------------------------------------------------------
 def main() -> None:
-    st.set_page_config(page_title="B2B РНП", layout="wide")
+    st.set_page_config(page_title="B2B РНП", page_icon="📊", layout="wide")
     st.title("B2B")
     st.markdown(
         '<a href="https://docs.google.com/spreadsheets/d/1mQiNJ_3XAimSraS3Wf5pWIFhkr8UWqJ7NlIoQvXoPkM/edit?hl=ru&gid=37260786#gid=37260786" '
