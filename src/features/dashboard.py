@@ -43,15 +43,29 @@ from features.render import (
     render_turnover_block,
 )
 from features.factor_analysis import render_factor_analysis
+from data.references import (
+    REF_CATEGORIES,
+    REF_CONTRACTORS,
+    REF_DZ_REMOVE,
+    REF_DZ_SPEC,
+    REF_DZ_TRAD,
+    REF_SALES_POD_CARTRIDGE,
+    get_reference_label,
+    get_reference_title,
+    load_reference,
+    reference_exists,
+    save_reference,
+)
+from features.hardware_sales_dynamics import (
+    HARDWARE_CATEGORY_OPTIONS,
+    ReferenceProduct,
+    append_products_to_cartridge_reference,
+    build_hardware_sales_result,
+    category_label_to_level,
+    product_level_to_category,
+)
 from features.reference_update import add_client_to_reference, add_product_to_reference
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-REF_DIR = PROJECT_ROOT / "data" / "reference"
-CONTRACTORS_PATH = REF_DIR / "contractors.xlsx"
-CATEGORIES_PATH = REF_DIR / "categories.xlsx"
-DZ_SPEC_PATH = REF_DIR / "ДЗ_Спец_Розница.xlsx"
-DZ_TRAD_PATH = REF_DIR / "ДЗ_Традиция.xlsx"
-DZ_REMOVE_PATH = REF_DIR / "ДЗ_Убрать.xlsx"
+from features.upload_help import render_block_title_with_help
 
 # Акцент для суммы ДЗ и числа контрагентов в заголовках (рядом с жирным текстом)
 _HEADER_METRIC_VALUE_COLOR = "#1565c0"
@@ -243,6 +257,8 @@ def render_special_retail_dashboard(
         st.session_state.show_general_rnp_block = False
     if "show_ai_rnp_block" not in st.session_state:
         st.session_state.show_ai_rnp_block = False
+    if "show_hardware_sales_dynamics_block" not in st.session_state:
+        st.session_state.show_hardware_sales_dynamics_block = False
 
     if spec_df.empty:
         st.info("Нет данных по Спец. рознице.")
@@ -320,6 +336,28 @@ def render_special_retail_dashboard(
         .st-key-toggle_ai_rnp_block_btn button:focus-visible {
             background-color: #955716 !important;
             border-color: #955716 !important;
+            color: #ffffff !important;
+            box-shadow: none !important;
+            outline: none !important;
+        }
+        .st-key-toggle_hardware_sales_dynamics_btn button {
+            background-color: #5c3d8f !important;
+            color: #ffffff !important;
+            border: 1px solid #5c3d8f !important;
+            font-weight: 800 !important;
+            font-size: 1.05rem !important;
+            border-radius: 10px !important;
+            min-height: 44px !important;
+            padding: 0.5rem 1rem !important;
+            justify-content: flex-start !important;
+            text-align: left !important;
+        }
+        .st-key-toggle_hardware_sales_dynamics_btn button:hover,
+        .st-key-toggle_hardware_sales_dynamics_btn button:active,
+        .st-key-toggle_hardware_sales_dynamics_btn button:focus,
+        .st-key-toggle_hardware_sales_dynamics_btn button:focus-visible {
+            background-color: #4a3173 !important;
+            border-color: #4a3173 !important;
             color: #ffffff !important;
             box-shadow: none !important;
             outline: none !important;
@@ -592,6 +630,201 @@ def render_special_retail_dashboard(
                 "Значение": st.column_config.TextColumn("Значение"),
             },
         )
+
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+    hardware_dynamics_toggle_label = (
+        "▼ Динамика продаж железа B2B (нажмите, чтобы свернуть)"
+        if st.session_state.show_hardware_sales_dynamics_block
+        else "▶ Динамика продаж железа B2B (нажмите, чтобы развернуть)"
+    )
+    col_hardware_dynamics_toggle, col_hardware_dynamics_spacer = st.columns(
+        [1.35, 1], gap="small"
+    )
+    with col_hardware_dynamics_toggle:
+        if st.button(
+            hardware_dynamics_toggle_label,
+            key="toggle_hardware_sales_dynamics_btn",
+            type="primary",
+            use_container_width=True,
+        ):
+            st.session_state.show_hardware_sales_dynamics_block = (
+                not st.session_state.show_hardware_sales_dynamics_block
+            )
+            st.rerun()
+    with col_hardware_dynamics_spacer:
+        st.empty()
+
+    if st.session_state.show_hardware_sales_dynamics_block:
+        _HARDWARE_LEVELS_HELP_CAPTION = (
+            "Зайдите к Qlik под профилем User2.<br>"
+            'В анализе продаж перейдите в закладку '
+            '"АВТОМАТИЗАЦИЯ B2B "Динамика продаж железа"".<br><br><br>'
+            "Отберите необходимую неделю и скачайте отчёт без форматирования "
+            "(не нажимайте галочку при скачивании).<br>"
+            'Вставьте скачанный документ в контейнер '
+            '"Продажи железа (ур.3 / ур.4)".'
+        )
+        render_block_title_with_help(
+            title="Динамика продаж под-систем и расходников",
+            popover_key="hardware-dynamics",
+            caption=_HARDWARE_LEVELS_HELP_CAPTION,
+            image_name="Dynamic.png",
+            align="left",
+        )
+        if not reference_exists(REF_SALES_POD_CARTRIDGE):
+            st.warning(
+                f"Справочник не найден: {get_reference_label(REF_SALES_POD_CARTRIDGE)}. "
+                "Добавьте лист Sales_pod_cartridge в Google Sheets или файл "
+                "Sales_pod_cartridge.xlsx в data/reference."
+            )
+        else:
+            try:
+                cartridge_ref_df = load_reference(REF_SALES_POD_CARTRIDGE)
+            except Exception as exc:  # noqa: BLE001
+                st.error(
+                    f"Не удалось загрузить справочник "
+                    f"{get_reference_label(REF_SALES_POD_CARTRIDGE)}: {exc}"
+                )
+                cartridge_ref_df = None
+
+            if cartridge_ref_df is not None:
+                st.markdown(
+                    """
+                    <style>
+                    .st-key-hardware_levels_uploader [data-testid="stFileUploaderDropzone"] {
+                        padding: 0.35rem 0.55rem;
+                        min-height: 2.35rem;
+                    }
+                    .st-key-hardware_levels_uploader [data-testid="stFileUploaderDropzone"] div {
+                        font-size: 0.82rem;
+                    }
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                upload_col, upload_spacer_col = st.columns([0.34, 0.66], gap="small")
+                with upload_col:
+                    hardware_levels_file = st.file_uploader(
+                        "Продажи железа (ур.3 / ур.4)",
+                        type=["xlsx", "xls"],
+                        key="hardware_levels_uploader",
+                    )
+                with upload_spacer_col:
+                    st.empty()
+                hardware_levels_df: pd.DataFrame | None = None
+                if hardware_levels_file is not None:
+                    try:
+                        hardware_levels_df = pd.read_excel(hardware_levels_file)
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Не получилось прочитать файл продаж железа: {exc}")
+
+                try:
+                    hardware_result = build_hardware_sales_result(
+                        reference_df=cartridge_ref_df,
+                        levels_df=hardware_levels_df,
+                    )
+                except ValueError as exc:
+                    st.error(str(exc))
+                    hardware_result = build_hardware_sales_result(
+                        reference_df=cartridge_ref_df,
+                        levels_df=None,
+                    )
+
+                candidates = hardware_result.candidates_for_reference
+                if candidates and hardware_levels_df is not None:
+                    with st.expander(
+                        f"Новые товары для справочника ({len(candidates)})",
+                        expanded=True,
+                    ):
+                        header_name_col, header_cat_col = st.columns([3.2, 1])
+                        with header_name_col:
+                            st.markdown("**Товар**")
+                        with header_cat_col:
+                            st.markdown("**Категория**")
+
+                        products_to_add: list[ReferenceProduct] = []
+                        for idx, item in enumerate(candidates):
+                            name_col, cat_col = st.columns([3.2, 1])
+                            default_category = product_level_to_category(item.level)
+                            with name_col:
+                                st.markdown(item.name)
+                            with cat_col:
+                                selected_category = st.selectbox(
+                                    "Категория",
+                                    HARDWARE_CATEGORY_OPTIONS,
+                                    index=HARDWARE_CATEGORY_OPTIONS.index(
+                                        default_category
+                                    ),
+                                    key=f"hardware_candidate_category_{idx}",
+                                    label_visibility="collapsed",
+                                )
+                            products_to_add.append(
+                                ReferenceProduct(
+                                    name=item.name,
+                                    level=category_label_to_level(selected_category),
+                                )
+                            )
+
+                        if st.button(
+                            f"Добавить {len(candidates)} товар(ов) в справочник Google Sheets",
+                            key="hardware_add_to_reference_btn",
+                            type="primary",
+                        ):
+                            try:
+                                updated_ref, added_names = (
+                                    append_products_to_cartridge_reference(
+                                        cartridge_ref_df,
+                                        products_to_add,
+                                    )
+                                )
+                                if not added_names:
+                                    st.info("Все найденные товары уже есть в справочнике.")
+                                else:
+                                    save_reference(
+                                        REF_SALES_POD_CARTRIDGE,
+                                        updated_ref,
+                                    )
+                                    for product in products_to_add:
+                                        if product.name not in added_names:
+                                            continue
+                                        _append_reference_addition(
+                                            entry_type="Товар железа B2B",
+                                            element=product.name,
+                                            reference=get_reference_title(
+                                                REF_SALES_POD_CARTRIDGE
+                                            ),
+                                            distribution=product_level_to_category(
+                                                product.level
+                                            ),
+                                        )
+                                    st.success(
+                                        "Добавлено в справочник: "
+                                        + ", ".join(added_names)
+                                    )
+                                    st.rerun()
+                            except Exception as exc:  # noqa: BLE001
+                                st.error(
+                                    f"Не удалось обновить справочник "
+                                    f"{get_reference_label(REF_SALES_POD_CARTRIDGE)}: {exc}"
+                                )
+
+                hardware_table = hardware_result.table
+                if hardware_table.empty:
+                    st.info("В справочнике нет товаров для отображения.")
+                else:
+                    hardware_table = hardware_table.copy()
+                    hardware_table["Продажи, шт."] = hardware_table["Продажи, шт."].map(
+                        lambda value: _format_quantity(float(value))
+                    )
+                    st.dataframe(
+                        hardware_table,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Товар": st.column_config.TextColumn("Товар"),
+                            "Продажи, шт.": st.column_config.TextColumn("Продажи, шт."),
+                        },
+                    )
 
 
 def _init_reference_additions_log() -> None:
@@ -870,26 +1103,21 @@ def _render_quick_reference_update(
 
     if not dz_pending.empty:
         target_map = {
-            "спец розница": DZ_SPEC_PATH,
-            "традиция": DZ_TRAD_PATH,
-            "убрать": DZ_REMOVE_PATH,
-        }
-        dz_ref_titles = {
-            DZ_SPEC_PATH: "ДЗ Спец розница",
-            DZ_TRAD_PATH: "ДЗ Традиция",
-            DZ_REMOVE_PATH: "ДЗ Убрать",
+            "спец розница": REF_DZ_SPEC,
+            "традиция": REF_DZ_TRAD,
+            "убрать": REF_DZ_REMOVE,
         }
         for idx, row in dz_pending.reset_index(drop=True).iterrows():
             target = st.session_state.get(f"dz_distribution_target_{idx}", "спец розница")
-            path = target_map[target]
-            ok, message = _append_counterparty_to_dz_reference(path, str(row["Контрагент"]))
+            ref_key = target_map[target]
+            ok, message = _append_counterparty_to_dz_reference(ref_key, str(row["Контрагент"]))
             if ok:
                 dz_added += 1
                 _append_reference_addition(
                     "ДЗ контрагент",
                     str(row["Контрагент"]),
-                    dz_ref_titles.get(path, path.name),
-                    f"Файл: {path.name}; выбор: {target}",
+                    get_reference_title(ref_key),
+                    f"Справочник: {get_reference_label(ref_key)}; выбор: {target}",
                 )
             else:
                 failed_messages.append(message)
@@ -952,29 +1180,24 @@ def _render_dz_counterparties_distribution(
         return
 
     target_map = {
-        "спец розница": DZ_SPEC_PATH,
-        "традиция": DZ_TRAD_PATH,
-        "убрать": DZ_REMOVE_PATH,
-    }
-    dz_ref_titles = {
-        DZ_SPEC_PATH: "ДЗ Спец розница",
-        DZ_TRAD_PATH: "ДЗ Традиция",
-        DZ_REMOVE_PATH: "ДЗ Убрать",
+        "спец розница": REF_DZ_SPEC,
+        "традиция": REF_DZ_TRAD,
+        "убрать": REF_DZ_REMOVE,
     }
     added = 0
     failed_messages: list[str] = []
     pending_rows = pending.reset_index(drop=True)
     for idx, row in pending_rows.iterrows():
         target = st.session_state.get(f"dz_standalone_target_{idx}", "спец розница")
-        path = target_map[target]
-        ok, message = _append_counterparty_to_dz_reference(path, str(row["Контрагент"]))
+        ref_key = target_map[target]
+        ok, message = _append_counterparty_to_dz_reference(ref_key, str(row["Контрагент"]))
         if ok:
             added += 1
             _append_reference_addition(
                 "ДЗ контрагент",
                 str(row["Контрагент"]),
-                dz_ref_titles.get(path, path.name),
-                f"Файл: {path.name}; выбор: {target}",
+                get_reference_title(ref_key),
+                f"Справочник: {get_reference_label(ref_key)}; выбор: {target}",
             )
         else:
             failed_messages.append(message)
@@ -1010,19 +1233,19 @@ def _collect_unassigned_dz_counterparties(
     grouped = grouped.merge(first_names, on="key", how="left")
 
     existing_keys = (
-        _load_dz_reference_keys(DZ_SPEC_PATH)
-        | _load_dz_reference_keys(DZ_TRAD_PATH)
-        | _load_dz_reference_keys(DZ_REMOVE_PATH)
+        _load_dz_reference_keys(REF_DZ_SPEC)
+        | _load_dz_reference_keys(REF_DZ_TRAD)
+        | _load_dz_reference_keys(REF_DZ_REMOVE)
     )
     result = grouped[~grouped["key"].isin(existing_keys)].copy()
     return result[["Контрагент", "ДЗ", "key"]]
 
 
-def _load_dz_reference_keys(path: Path) -> set[str]:
-    if not path.exists():
+def _load_dz_reference_keys(ref_key: str) -> set[str]:
+    if not reference_exists(ref_key):
         return set()
     try:
-        df = pd.read_excel(path)
+        df = load_reference(ref_key)
     except Exception:  # noqa: BLE001
         return set()
     if "Контрагент" not in df.columns:
@@ -1039,15 +1262,16 @@ def _load_dz_reference_keys(path: Path) -> set[str]:
     )
 
 
-def _append_counterparty_to_dz_reference(path: Path, counterparty: str) -> tuple[bool, str]:
-    if not path.exists():
-        return False, f"Справочник не найден: {path.name}"
+def _append_counterparty_to_dz_reference(ref_key: str, counterparty: str) -> tuple[bool, str]:
+    label = get_reference_label(ref_key)
+    if not reference_exists(ref_key):
+        return False, f"Справочник не найден: {label}"
     try:
-        df = pd.read_excel(path)
+        df = load_reference(ref_key)
     except Exception as exc:  # noqa: BLE001
-        return False, f"Не удалось прочитать {path.name}: {exc}"
+        return False, f"Не удалось прочитать {label}: {exc}"
     if "Контрагент" not in df.columns:
-        return False, f"В справочнике {path.name} нет столбца «Контрагент»."
+        return False, f"В справочнике {label} нет столбца «Контрагент»."
 
     value = str(counterparty).strip()
     if not value:
@@ -1062,19 +1286,19 @@ def _append_counterparty_to_dz_reference(path: Path, counterparty: str) -> tuple
     new_row["Контрагент"] = value
     updated = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     try:
-        updated.to_excel(path, index=False)
+        save_reference(ref_key, updated)
     except Exception as exc:  # noqa: BLE001
-        return False, f"Не удалось записать {path.name}: {exc}"
-    return True, f"Добавлен контрагент в {path.name}"
+        return False, f"Не удалось записать {label}: {exc}"
+    return True, f"Добавлен контрагент в {get_reference_title(ref_key)}"
 
 
 def _build_dz_spec_table(
     receivables_df: pd.DataFrame | None,
 ) -> tuple[pd.DataFrame, float, str | None]:
-    if not DZ_SPEC_PATH.exists():
-        return pd.DataFrame(), 0.0, f"Справочник не найден: {DZ_SPEC_PATH.name}"
+    if not reference_exists(REF_DZ_SPEC):
+        return pd.DataFrame(), 0.0, f"Справочник не найден: {get_reference_label(REF_DZ_SPEC)}"
     try:
-        dz_ref_df = pd.read_excel(DZ_SPEC_PATH)
+        dz_ref_df = load_reference(REF_DZ_SPEC)
     except Exception as exc:  # noqa: BLE001
         return pd.DataFrame(), 0.0, f"Не удалось прочитать справочник ДЗ: {exc}"
     if "Контрагент" not in dz_ref_df.columns:
@@ -1155,7 +1379,7 @@ def _build_tradition_table_with_dz(
     categories_part = categories_part.reindex(columns=target_columns, fill_value="")
 
     dz_total, _ = _calc_dz_total_by_reference(
-        reference_path=DZ_TRAD_PATH,
+        reference_key=REF_DZ_TRAD,
         receivables_df=receivables_df,
     )
     dz_row = {"Показатель": "ДЗ на конец недели"}
@@ -1174,15 +1398,15 @@ def _build_tradition_table_with_dz(
 
 
 def _calc_dz_total_by_reference(
-    reference_path: Path,
+    reference_key: str,
     receivables_df: pd.DataFrame | None,
 ) -> tuple[float, str | None]:
     if receivables_df is None or receivables_df.empty:
         return 0.0, "no_receivables"
-    if not reference_path.exists():
+    if not reference_exists(reference_key):
         return 0.0, "no_reference"
     try:
-        ref_df = pd.read_excel(reference_path)
+        ref_df = load_reference(reference_key)
     except Exception:  # noqa: BLE001
         return 0.0, "read_error"
     if "Контрагент" not in ref_df.columns:
@@ -1447,8 +1671,8 @@ def _build_ai_report_table(
     tradition_margin_pct = (
         (tradition_margin / tradition_sales_wo_vat) * 100 if tradition_sales_wo_vat else 0.0
     )
-    dz_spec_total, _ = _calc_dz_total_by_reference(DZ_SPEC_PATH, receivables_df)
-    dz_trad_total, _ = _calc_dz_total_by_reference(DZ_TRAD_PATH, receivables_df)
+    dz_spec_total, _ = _calc_dz_total_by_reference(REF_DZ_SPEC, receivables_df)
+    dz_trad_total, _ = _calc_dz_total_by_reference(REF_DZ_TRAD, receivables_df)
 
     rows: list[dict[str, str]] = [
         {"Показатель": "Заказы", "Значение": ""},
@@ -1568,8 +1792,8 @@ def _build_general_rnp_summary_table(
         tradition_df, format_money=_format_money_compact
     )
 
-    dz_spec_total, _ = _calc_dz_total_by_reference(DZ_SPEC_PATH, receivables_df)
-    dz_trad_total, _ = _calc_dz_total_by_reference(DZ_TRAD_PATH, receivables_df)
+    dz_spec_total, _ = _calc_dz_total_by_reference(REF_DZ_SPEC, receivables_df)
+    dz_trad_total, _ = _calc_dz_total_by_reference(REF_DZ_TRAD, receivables_df)
     cash_inflow_trad_total = _calc_cash_inflow_total_for_tradition(cash_inflow_df)
 
     rows: list[dict[str, str]] = [
@@ -1666,7 +1890,7 @@ def _calc_cash_inflow_total_for_tradition(cash_inflow_df: pd.DataFrame | None) -
     if cash_inflow_df.shape[1] < 11:
         return 0.0
 
-    tradition_keys = _load_dz_reference_keys(DZ_TRAD_PATH)
+    tradition_keys = _load_dz_reference_keys(REF_DZ_TRAD)
     if not tradition_keys:
         return 0.0
 
@@ -1875,13 +2099,11 @@ def _extract_orders_week_number(
     return str(int(round(float(week_series.max()))))
 
 
-def _read_latest_reference(path: Path, fallback_df: pd.DataFrame) -> pd.DataFrame:
-    if path.exists():
-        try:
-            return pd.read_excel(path)
-        except Exception:  # noqa: BLE001
-            return fallback_df
-    return fallback_df
+def _read_latest_reference(ref_key: str, fallback_df: pd.DataFrame) -> pd.DataFrame:
+    try:
+        return load_reference(ref_key)
+    except Exception:  # noqa: BLE001
+        return fallback_df
 
 
 def _build_full_report_excel(
@@ -1894,8 +2116,8 @@ def _build_full_report_excel(
     contractors_fallback_df: pd.DataFrame,
     categories_fallback_df: pd.DataFrame,
 ) -> bytes | None:
-    contractors_df = _read_latest_reference(CONTRACTORS_PATH, contractors_fallback_df)
-    categories_df = _read_latest_reference(CATEGORIES_PATH, categories_fallback_df)
+    contractors_df = _read_latest_reference(REF_CONTRACTORS, contractors_fallback_df)
+    categories_df = _read_latest_reference(REF_CATEGORIES, categories_fallback_df)
 
     merged_df, _, _ = prepare_dataset(
         sales_df=sales_df,
@@ -2072,7 +2294,7 @@ def _build_tradition_export_table(
     metrics_table = metrics_raw.rename(
         columns={"Группа": "Показатель", "Показатель": "Метрика", "Значение": "Традиция"}
     )[["Метрика", "Традиция"]].rename(columns={"Метрика": "Показатель"})
-    dz_trad_total, _ = _calc_dz_total_by_reference(DZ_TRAD_PATH, receivables_df)
+    dz_trad_total, _ = _calc_dz_total_by_reference(REF_DZ_TRAD, receivables_df)
     dz_row = pd.DataFrame(
         [{"Показатель": "ДЗ на конец недели", "Традиция": _format_money(dz_trad_total)}]
     )

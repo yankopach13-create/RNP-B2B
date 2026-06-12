@@ -1,4 +1,3 @@
-import base64
 from pathlib import Path
 import sys
 
@@ -8,17 +7,24 @@ import streamlit as st
 # --- подготовка путей -----------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
-REF_DIR = PROJECT_ROOT / "data" / "reference"
-INSTRUCTIONS_DIR = PROJECT_ROOT / "assets" / "instructions"
-CONTRACTORS_PATH = REF_DIR / "contractors.xlsx"
-CATEGORIES_PATH = REF_DIR / "categories.xlsx"
 if str(SRC_DIR) not in sys.path:
     sys.path.append(str(SRC_DIR))
 
 # --- собственные модули ----------------------------------------------------------------------------
+from data.references import (  # noqa: E402
+    REF_CATEGORIES,
+    REF_CONTRACTORS,
+    get_reference_label,
+    load_reference,
+    sheets_configured,
+)
 from features.dashboard import (  # noqa: E402
     CLIENT_BLOCK_WEEK_INPUT_KEY,
     render_special_retail_dashboard,
+)
+from features.upload_help import (  # noqa: E402
+    INSTRUCTIONS_DIR,
+    render_section_header_with_help,
 )
 
 
@@ -46,134 +52,6 @@ def _render_uploader_help(image_name: str, caption: str = "") -> None:
             st.warning(f"Скриншот не найден: {image_name}")
 
 
-def _build_instruction_image_html(image_name: str) -> str:
-    image_path = INSTRUCTIONS_DIR / image_name
-    if not image_path.exists():
-        return (
-            "<div class='help-popover__warning'>"
-            f"Скриншот не найден: {image_name}"
-            "</div>"
-        )
-
-    suffix = image_path.suffix.lower()
-    mime = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-    }.get(suffix, "application/octet-stream")
-    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
-    data_url = f"data:{mime};base64,{encoded}"
-
-    return (
-        "<div class='help-popover__image-wrapper'>"
-        f"<img src='{data_url}' alt='{image_name}' class='help-popover__image' />"
-        f"<a href='{data_url}' download='{image_path.name}' class='help-popover__download'>"
-        "Скачать изображение"
-        "</a>"
-        "</div>"
-    )
-
-
-def _split_caption_paragraphs(caption: str) -> list[str]:
-    if not caption:
-        return []
-    return [part.strip() for part in caption.split("<br><br>") if part.strip()]
-
-
-def _render_custom_help_popover(
-    popover_key: str,
-    caption: str,
-    image_name: str,
-    second_image_name: str | None = None,
-    second_caption: str = "",
-    trigger_label: str = "ℹ️",
-    align: str = "right",
-    two_column_layout: bool = False,
-    compact_images: bool = False,
-) -> None:
-    parts: list[str] = []
-    if two_column_layout and second_image_name:
-        left_paragraphs = _split_caption_paragraphs(caption)
-        right_paragraphs = _split_caption_paragraphs(second_caption)
-        rows_count = max(len(left_paragraphs), len(right_paragraphs))
-        text_rows: list[str] = []
-        for idx in range(rows_count):
-            left_part = left_paragraphs[idx] if idx < len(left_paragraphs) else ""
-            right_part = right_paragraphs[idx] if idx < len(right_paragraphs) else ""
-            text_rows.append(
-                (
-                    "<div class='help-popover__row'>"
-                    f"<div class='help-popover__paragraph'>{left_part}</div>"
-                    f"<div class='help-popover__paragraph'>{right_part}</div>"
-                    "</div>"
-                )
-            )
-
-        parts.append(
-            (
-                "<div class='help-popover__split help-popover__split-text'>"
-                f"{''.join(text_rows)}"
-                "</div>"
-                "<div class='help-popover__split help-popover__split-images'>"
-                f"<div class='help-popover__split-col'>{_build_instruction_image_html(image_name)}</div>"
-                f"<div class='help-popover__split-col'>{_build_instruction_image_html(second_image_name)}</div>"
-                "</div>"
-            )
-        )
-    else:
-        if caption:
-            parts.append(f"<div class='help-popover__caption'>{caption}</div>")
-        parts.append(_build_instruction_image_html(image_name))
-
-        if second_image_name:
-            if second_caption:
-                parts.append(f"<div class='help-popover__caption'>{second_caption}</div>")
-            parts.append(_build_instruction_image_html(second_image_name))
-
-    compact_class = " help-popover--compact" if compact_images else ""
-
-    st.markdown(
-        (
-            f"<div class='help-popover help-popover--{align}{compact_class}' id='help-popover-{popover_key}'>"
-            f"<input type='checkbox' id='help-toggle-{popover_key}' class='help-popover__toggle' />"
-            f"<label for='help-toggle-{popover_key}' class='help-popover__trigger'>{trigger_label}</label>"
-            f"<label for='help-toggle-{popover_key}' class='help-popover__backdrop' aria-hidden='true'></label>"
-            f"<div class='help-popover__panel'>{''.join(parts)}</div>"
-            "</div>"
-        ),
-        unsafe_allow_html=True,
-    )
-
-
-def _render_section_header_with_help(
-    title: str,
-    image_name: str,
-    caption: str,
-    second_image_name: str | None = None,
-    second_caption: str = "",
-    align: str = "right",
-    two_column_layout: bool = False,
-    compact_images: bool = False,
-) -> None:
-    title_col, help_col = st.columns([0.82, 0.18], gap="small")
-    with title_col:
-        st.subheader(title)
-    with help_col:
-        st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
-        _render_custom_help_popover(
-            popover_key=title.lower().replace(" ", "-"),
-            caption=caption,
-            image_name=image_name,
-            second_image_name=second_image_name,
-            second_caption=second_caption,
-            align=align,
-            two_column_layout=two_column_layout,
-            compact_images=compact_images,
-        )
-
-
 # --------------------------------------------------------------------------------------------------
 # Streamlit-приложение
 # --------------------------------------------------------------------------------------------------
@@ -187,7 +65,7 @@ def main() -> None:
 
     # Столбец 2: Продажи
     with col_sales:
-        _render_section_header_with_help(
+        render_section_header_with_help(
             title="Продажи",
             image_name="sales.png",
             caption=(
@@ -206,7 +84,7 @@ def main() -> None:
 
     # Столбец 3: Оборачиваемость
     with col_turnover:
-        _render_section_header_with_help(
+        render_section_header_with_help(
             title="Оборачиваемость",
             image_name="turnover.png",
             caption=(
@@ -231,7 +109,7 @@ def main() -> None:
 
     # Столбец 4: Финансовые загрузки
     with col_finance:
-        _render_section_header_with_help(
+        render_section_header_with_help(
             title="ДЗ и ДС",
             image_name="receivables_62.png",
             caption=(
@@ -269,6 +147,11 @@ def main() -> None:
             width: 100%;
             text-align: right;
             z-index: 10;
+        }
+        .help-popover--inline {
+            width: auto;
+            text-align: left;
+            flex-shrink: 0;
         }
         .help-popover__toggle {
             position: absolute;
@@ -441,9 +324,14 @@ def main() -> None:
     if not st.session_state.data_loaded:
         return
 
-    # Загружаем все файлы (необязательные)
-    contractors_df = _read_excel(CONTRACTORS_PATH, "Справочник контрагентов")
-    categories_df = _read_excel(CATEGORIES_PATH, "Категории товаров")
+    # Загружаем справочники (Google Sheets или локальные xlsx)
+    try:
+        contractors_df = load_reference(REF_CONTRACTORS)
+        categories_df = load_reference(REF_CATEGORIES)
+    except Exception as exc:  # noqa: BLE001
+        source = "Google Sheets" if sheets_configured() else "локальных файлов"
+        st.error(f"Не удалось загрузить справочники из {source}: {exc}")
+        return
     sales_df = _read_excel(sales_file, "Продажи")
     orders_df = None
     turnover_90_df = _read_excel(turnover_90_file, "Оборачиваемость 90 дней")
@@ -469,15 +357,15 @@ def main() -> None:
         st.warning("⚠️ Без файла «Продажи» основной отчёт недоступен.")
         return
 
-    if contractors_df is None:
+    if contractors_df.empty or "Контрагент" not in contractors_df.columns:
         st.error(
-            f"⚠️ Не удалось прочитать справочник контрагентов: {CONTRACTORS_PATH}"
+            f"⚠️ Справочник контрагентов пуст или некорректен: {get_reference_label(REF_CONTRACTORS)}"
         )
         return
 
-    if categories_df is None:
+    if categories_df.empty or "Категория:" not in categories_df.columns:
         st.error(
-            f"⚠️ Не удалось прочитать справочник категорий: {CATEGORIES_PATH}"
+            f"⚠️ Справочник категорий пуст или некорректен: {get_reference_label(REF_CATEGORIES)}"
         )
         return
 

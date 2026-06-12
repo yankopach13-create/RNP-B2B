@@ -1,27 +1,30 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-REF_DIR = PROJECT_ROOT / "data" / "reference"
-CONTRACTORS_PATH = REF_DIR / "contractors.xlsx"
-CATEGORIES_PATH = REF_DIR / "categories.xlsx"
+from data.references import (
+    REF_CATEGORIES,
+    REF_CONTRACTORS,
+    get_reference_label,
+    load_reference,
+    reference_exists,
+    save_reference,
+)
 
 
 def add_client_to_reference(client_name: str, subdivision: str) -> tuple[bool, str]:
     client = str(client_name).strip()
     subdivision_value = str(subdivision).strip()
+    label = get_reference_label(REF_CONTRACTORS)
     if not client:
         return False, "Пустое имя клиента."
     if not subdivision_value:
         return False, f"Для клиента «{client}» не выбрано подразделение."
-    if not CONTRACTORS_PATH.exists():
-        return False, f"Файл не найден: {CONTRACTORS_PATH}"
+    if not reference_exists(REF_CONTRACTORS):
+        return False, f"Справочник не найден: {label}"
 
     try:
-        df = pd.read_excel(CONTRACTORS_PATH)
+        df = load_reference(REF_CONTRACTORS)
     except Exception as exc:  # noqa: BLE001
         return False, f"Не удалось прочитать справочник контрагентов: {exc}"
 
@@ -49,7 +52,7 @@ def add_client_to_reference(client_name: str, subdivision: str) -> tuple[bool, s
                 if not segment_value or segment_value.lower() == "nan":
                     df.loc[target_idx, "Сегмент"] = "C"
             try:
-                df.to_excel(CONTRACTORS_PATH, index=False)
+                save_reference(REF_CONTRACTORS, df)
             except Exception as exc:  # noqa: BLE001
                 return False, f"Не удалось записать справочник контрагентов: {exc}"
             return True, f"Обновлён клиент «{client}» (заполнено подразделение)."
@@ -63,7 +66,7 @@ def add_client_to_reference(client_name: str, subdivision: str) -> tuple[bool, s
 
     updated = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     try:
-        updated.to_excel(CONTRACTORS_PATH, index=False)
+        save_reference(REF_CONTRACTORS, updated)
     except Exception as exc:  # noqa: BLE001
         return False, f"Не удалось записать справочник контрагентов: {exc}"
 
@@ -76,18 +79,23 @@ def add_product_to_reference(
     slice1: str,
     slice2: str,
 ) -> tuple[bool, str]:
-    p1, p2, p3 = (str(product_levels[0]).strip(), str(product_levels[1]).strip(), str(product_levels[2]).strip())
+    p1, p2, p3 = (
+        str(product_levels[0]).strip(),
+        str(product_levels[1]).strip(),
+        str(product_levels[2]).strip(),
+    )
     category_value = str(category).strip()
     slice1_value = str(slice1).strip()
     slice2_value = str(slice2).strip()
+    label = get_reference_label(REF_CATEGORIES)
 
     if not category_value:
         return False, f"Для товара «{p1} / {p2} / {p3}» не выбрана категория."
-    if not CATEGORIES_PATH.exists():
-        return False, f"Файл не найден: {CATEGORIES_PATH}"
+    if not reference_exists(REF_CATEGORIES):
+        return False, f"Справочник не найден: {label}"
 
     try:
-        df = pd.read_excel(CATEGORIES_PATH)
+        df = load_reference(REF_CATEGORIES)
     except Exception as exc:  # noqa: BLE001
         return False, f"Не удалось прочитать справочник категорий: {exc}"
 
@@ -121,7 +129,7 @@ def add_product_to_reference(
 
     updated = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     try:
-        updated.to_excel(CATEGORIES_PATH, index=False)
+        save_reference(REF_CATEGORIES, updated)
     except Exception as exc:  # noqa: BLE001
         return False, f"Не удалось записать справочник категорий: {exc}"
 

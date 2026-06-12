@@ -7,6 +7,7 @@ import pandas as pd
 from config.constants import CATEGORY_DISPLAY_ORDER, CATEGORY_FIXES
 
 PRODUCT_COLUMNS = ["Товар ур.1", "Товар ур.2", "Товар ур.3"]
+OPTIONAL_PRODUCT_COLUMNS = ["Товар ур.4"]
 SALES_COLUMNS_EXPECTED = {
     "Продажи с НДС": "revenue",
     "Маржа": "margin",
@@ -66,6 +67,7 @@ def prepare_dataset(
     categories_map["Разрез 2"] = categories_map["Разрез 2"].fillna("")
 
     sales = sales_df.copy()
+    sales = _rename_product_level_columns(sales)
     sales = _normalise_product_columns(sales)
     _ensure_numeric_columns(sales, SALES_COLUMNS_EXPECTED.keys())
     sales["Клиент"] = sales["Клиент"].astype(str).str.strip()
@@ -133,6 +135,21 @@ def prepare_dataset(
     merged = merged.dropna(subset=["Подразделение"]).reset_index(drop=True)
     return merged, sorted(new_clients), unmatched_products_list
 
+def _rename_product_level_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {
+        "Товар1": "Товар ур.1",
+        "Товар 1": "Товар ур.1",
+        "Товар2": "Товар ур.2",
+        "Товар 2": "Товар ур.2",
+        "Товар3": "Товар ур.3",
+        "Товар 3": "Товар ур.3",
+        "Товар4": "Товар ур.4",
+        "Товар 4": "Товар ур.4",
+        "Товар ур. 4": "Товар ур.4",
+    }
+    return df.rename(columns={src: dst for src, dst in rename_map.items() if src in df.columns})
+
+
 def _normalise_product_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     for col in PRODUCT_COLUMNS:
@@ -140,6 +157,12 @@ def _normalise_product_columns(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = df[col].fillna("__NONE__").astype(str).str.strip()
         else:
             df[col] = "__NONE__"
+    for col in OPTIONAL_PRODUCT_COLUMNS:
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str).str.strip()
+            df[col] = df[col].replace("__NONE__", "")
+        else:
+            df[col] = ""
     return df
 
 def _ensure_numeric_columns(df: pd.DataFrame, columns: Iterable[str]) -> None:

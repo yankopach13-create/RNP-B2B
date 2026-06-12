@@ -1,0 +1,33 @@
+# Виртуальное окружение
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Streamlit (локальные секреты — не пушить!)
+.streamlit/secrets.toml
+service-account.json
+*-service-account*.json
+credentials.json
+
+# Временные и рабочие данные (справочники и assets — в репозитории)
+data/raw/
+data/processed/
+*.log
