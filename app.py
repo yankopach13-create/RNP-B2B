@@ -59,11 +59,8 @@ def main() -> None:
     st.set_page_config(page_title="B2B РНП", layout="wide")
     st.title("B2B")
     st.markdown(
-        'База данных '
         '<a href="https://docs.google.com/spreadsheets/d/1mQiNJ_3XAimSraS3Wf5pWIFhkr8UWqJ7NlIoQvXoPkM/edit?hl=ru&gid=37260786#gid=37260786" '
-        'target="_blank" rel="noopener noreferrer">'
-        "https://docs.google.com/spreadsheets/d/1mQiNJ_3XAimSraS3Wf5pWIFhkr8UWqJ7NlIoQvXoPkM/edit?hl=ru&gid=37260786#gid=37260786"
-        "</a>",
+        'target="_blank" rel="noopener noreferrer">База данных</a>',
         unsafe_allow_html=True,
     )
     if "data_loaded" not in st.session_state:
