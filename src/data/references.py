@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 import pandas as pd
 import streamlit as st
@@ -57,6 +58,14 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 _PLACEHOLDER_SPREADSHEET_ID = "REPLACE_WITH_YOUR_SPREADSHEET_ID"
+_API_MAX_ATTEMPTS = 3
+_API_RETRY_DELAY_SEC = 0.6
+
+T = TypeVar("T")
+
+
+class ReferenceConcurrentModificationError(RuntimeError):
+    """Справочник изменился другим пользователем между чтением и записью."""
 
 
 def _references_config() -> dict[str, Any]:
@@ -84,6 +93,11 @@ def _sheet_name(key: str) -> str:
     if override:
         return str(override).strip()
     return _REFERENCE_META[key]["sheet"]
+
+
+def _spreadsheet_id() -> str:
+    refs = _references_config()
+    return str(refs["spreadsheet_id"]).strip()
 
 
 def get_reference_title(key: str) -> str:
@@ -140,6 +154,19 @@ def _apply_ssl_verify(client) -> None:
         client.http_client.session.verify = verify
 
 
+def _retry_sheets_api(operation: Callable[[], T], *, action: str) -> T:
+    last_error: Exception | None = None
+    for attempt in range(1, _API_MAX_ATTEMPTS + 1):
+        try:
+            return operation()
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if attempt >= _API_MAX_ATTEMPTS:
+                break
+            time.sleep(_API_RETRY_DELAY_SEC * attempt)
+    raise RuntimeError(f"Не удалось выполнить операцию «{action}»: {last_error}") from last_error
+
+
 @st.cache_resource
 def _get_gspread_client():
     import gspread
@@ -152,64 +179,270 @@ def _get_gspread_client():
     return client
 
 
+def _values_to_dataframe(rows: list[list[Any]]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame()
+    header = [str(col).strip() for col in rows[0]]
+    if len(rows) == 1:
+        return pd.DataFrame(columns=header)
+    return pd.DataFrame(rows[1:], columns=header)
+
+
+def _fetch_worksheet_values(spreadsheet_id: str, worksheet_name: str) -> list[list[Any]]:
+    def _read() -> list[list[Any]]:
+        client = _get_gspread_client()
+        worksheet = client.open_by_key(spreadsheet_id).worksheet(worksheet_name)
+        return worksheet.get_all_values()
+
+    return _retry_sheets_api(_read, action=f"чтение листа «{worksheet_name}»")
+
+
 @st.cache_data(ttl=120, show_spinner=False)
-def _load_from_sheets(spreadsheet_id: str, worksheet_name: str) -> pd.DataFrame:
-    client = _get_gspread_client()
-    worksheet = client.open_by_key(spreadsheet_id).worksheet(worksheet_name)
-    records = worksheet.get_all_records()
-    if records:
-        return pd.DataFrame(records)
-    rows = worksheet.get_all_values()
-    if rows:
-        return pd.DataFrame(columns=rows[0])
-    return pd.DataFrame()
+def _load_from_sheets_cached(spreadsheet_id: str, worksheet_name: str) -> pd.DataFrame:
+    rows = _fetch_worksheet_values(spreadsheet_id, worksheet_name)
+    return _values_to_dataframe(rows)
 
 
-def _save_to_sheets(spreadsheet_id: str, worksheet_name: str, df: pd.DataFrame) -> None:
-    client = _get_gspread_client()
-    worksheet = client.open_by_key(spreadsheet_id).worksheet(worksheet_name)
-    worksheet.clear()
-    if df.empty and list(df.columns):
-        worksheet.update([list(df.columns)])
+def _load_from_sheets_fresh(spreadsheet_id: str, worksheet_name: str) -> pd.DataFrame:
+    rows = _fetch_worksheet_values(spreadsheet_id, worksheet_name)
+    return _values_to_dataframe(rows)
+
+
+def _open_worksheet(spreadsheet_id: str, worksheet_name: str):
+    def _open():
+        client = _get_gspread_client()
+        return client.open_by_key(spreadsheet_id).worksheet(worksheet_name)
+
+    return _retry_sheets_api(_open, action=f"открытие листа «{worksheet_name}»")
+
+
+def _worksheet_row_count(spreadsheet_id: str, worksheet_name: str) -> int:
+    worksheet = _open_worksheet(spreadsheet_id, worksheet_name)
+    return len(worksheet.get_all_values())
+
+
+def _row_dicts_to_sheet_rows(
+    header: list[str], rows: list[dict[str, object]]
+) -> list[list[object]]:
+    return [[row.get(col, "") for col in header] for row in rows]
+
+
+def _append_rows_to_sheets(
+    spreadsheet_id: str,
+    worksheet_name: str,
+    rows: list[dict[str, object]],
+) -> None:
+    if not rows:
         return
-    if df.empty:
+
+    def _append() -> None:
+        worksheet = _open_worksheet(spreadsheet_id, worksheet_name)
+        values = worksheet.get_all_values()
+        header = [str(col).strip() for col in values[0]] if values else list(rows[0].keys())
+        sheet_rows = _row_dicts_to_sheet_rows(header, rows)
+        worksheet.append_rows(
+            sheet_rows,
+            value_input_option="USER_ENTERED",
+            table_range="A1",
+        )
+
+    _retry_sheets_api(_append, action=f"добавление строк в «{worksheet_name}»")
+
+
+def _patch_cells_in_sheets(
+    spreadsheet_id: str,
+    worksheet_name: str,
+    patches: list[tuple[int, str, object]],
+) -> None:
+    """Обновляет ячейки: (индекс строки в DataFrame, имя столбца, значение)."""
+    if not patches:
         return
-    payload = df.copy().where(pd.notnull(df), "")
-    values = [payload.columns.tolist()] + payload.values.tolist()
-    worksheet.update(values, value_input_option="USER_ENTERED")
+
+    from gspread.utils import rowcol_to_a1
+
+    def _patch() -> None:
+        worksheet = _open_worksheet(spreadsheet_id, worksheet_name)
+        values = worksheet.get_all_values()
+        if not values:
+            raise RuntimeError(f"Лист «{worksheet_name}» пуст — нельзя обновить ячейки.")
+        header = [str(col).strip() for col in values[0]]
+        col_index = {name: idx + 1 for idx, name in enumerate(header)}
+        batch_data: list[dict[str, object]] = []
+        for df_index, column_name, value in patches:
+            col_num = col_index.get(column_name)
+            if col_num is None:
+                raise RuntimeError(
+                    f"Столбец «{column_name}» не найден на листе «{worksheet_name}»."
+                )
+            sheet_row = int(df_index) + 2
+            cell_range = rowcol_to_a1(sheet_row, col_num)
+            batch_data.append({"range": cell_range, "values": [[value]]})
+        worksheet.batch_update(batch_data, value_input_option="USER_ENTERED")
+
+    _retry_sheets_api(_patch, action=f"обновление ячеек в «{worksheet_name}»")
 
 
-def load_reference(key: str) -> pd.DataFrame:
-    """Загружает справочник из Google Sheets или локального xlsx."""
-    if key not in _REFERENCE_META:
-        raise ValueError(f"Неизвестный справочник: {key}")
+def _save_to_sheets(
+    spreadsheet_id: str,
+    worksheet_name: str,
+    df: pd.DataFrame,
+    *,
+    expected_row_count: int | None = None,
+) -> None:
+    def _save() -> None:
+        worksheet = _open_worksheet(spreadsheet_id, worksheet_name)
+        current_values = worksheet.get_all_values()
+        current_row_count = len(current_values)
+        if (
+            expected_row_count is not None
+            and current_row_count != expected_row_count
+        ):
+            raise ReferenceConcurrentModificationError(
+                f"Лист «{worksheet_name}» изменился другим пользователем "
+                f"(было {expected_row_count} строк, сейчас {current_row_count}). "
+                "Повторите операцию."
+            )
 
-    if sheets_configured():
-        refs = _references_config()
-        spreadsheet_id = str(refs["spreadsheet_id"]).strip()
-        return _load_from_sheets(spreadsheet_id, _sheet_name(key)).copy()
+        if df.empty and list(df.columns):
+            values: list[list[object]] = [list(df.columns)]
+        elif df.empty:
+            values = []
+        else:
+            payload = df.copy().where(pd.notnull(df), "")
+            values = [payload.columns.tolist()] + payload.values.tolist()
 
-    local_path = REF_DIR / _REFERENCE_META[key]["local"]
+        if not values:
+            return
+
+        nrows = len(values)
+        ncols = max(len(row) for row in values)
+        normalized = [row + [""] * (ncols - len(row)) for row in values]
+        worksheet.resize(rows=nrows, cols=ncols)
+        worksheet.update(
+            normalized,
+            range_name="A1",
+            value_input_option="USER_ENTERED",
+        )
+
+    _retry_sheets_api(_save, action=f"сохранение листа «{worksheet_name}»")
+
+
+def _local_path(key: str) -> Path:
+    return REF_DIR / _REFERENCE_META[key]["local"]
+
+
+def _load_local_reference(key: str) -> pd.DataFrame:
+    local_path = _local_path(key)
     if not local_path.exists():
         raise FileNotFoundError(f"Файл не найден: {local_path}")
     return pd.read_excel(local_path)
 
 
-def save_reference(key: str, df: pd.DataFrame) -> None:
-    """Сохраняет справочник в Google Sheets или локальный xlsx."""
+def _save_local_reference(key: str, df: pd.DataFrame) -> None:
+    local_path = _local_path(key)
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_excel(local_path, index=False)
+
+
+def _append_rows_local(key: str, rows: list[dict[str, object]]) -> None:
+    if not rows:
+        return
+    df = _load_local_reference(key)
+    header = list(df.columns) if not df.empty else list(rows[0].keys())
+    new_df = pd.DataFrame(rows, columns=header)
+    updated = pd.concat([df, new_df], ignore_index=True)
+    _save_local_reference(key, updated)
+
+
+def _patch_cells_local(key: str, patches: list[tuple[int, str, object]]) -> None:
+    if not patches:
+        return
+    df = _load_local_reference(key)
+    for df_index, column_name, value in patches:
+        df.loc[df_index, column_name] = value
+    _save_local_reference(key, df)
+
+
+def load_reference(key: str, *, fresh: bool = False) -> pd.DataFrame:
+    """Загружает справочник. fresh=True — всегда без кэша (для записи)."""
     if key not in _REFERENCE_META:
         raise ValueError(f"Неизвестный справочник: {key}")
 
     if sheets_configured():
-        refs = _references_config()
-        spreadsheet_id = str(refs["spreadsheet_id"]).strip()
-        _save_to_sheets(spreadsheet_id, _sheet_name(key), df)
+        spreadsheet_id = _spreadsheet_id()
+        sheet = _sheet_name(key)
+        if fresh:
+            return _load_from_sheets_fresh(spreadsheet_id, sheet).copy()
+        return _load_from_sheets_cached(spreadsheet_id, sheet).copy()
+
+    return _load_local_reference(key)
+
+
+def load_reference_fresh(key: str) -> pd.DataFrame:
+    """Свежая копия справочника без кэша — только для операций записи."""
+    return load_reference(key, fresh=True)
+
+
+def append_reference_rows(key: str, rows: list[dict[str, object]]) -> None:
+    """Добавляет строки в конец справочника, не затрагивая существующие данные."""
+    if key not in _REFERENCE_META:
+        raise ValueError(f"Неизвестный справочник: {key}")
+    if not rows:
+        return
+
+    if sheets_configured():
+        _append_rows_to_sheets(_spreadsheet_id(), _sheet_name(key), rows)
     else:
-        local_path = REF_DIR / _REFERENCE_META[key]["local"]
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_excel(local_path, index=False)
-    clear_reference_cache()
+        _append_rows_local(key, rows)
+    clear_reference_cache(key)
 
 
-def clear_reference_cache() -> None:
-    _load_from_sheets.clear()
+def patch_reference_cells(
+    key: str, patches: list[tuple[int, str, object]]
+) -> None:
+    """Точечно обновляет ячейки по индексу строки DataFrame."""
+    if key not in _REFERENCE_META:
+        raise ValueError(f"Неизвестный справочник: {key}")
+    if not patches:
+        return
+
+    if sheets_configured():
+        _patch_cells_in_sheets(_spreadsheet_id(), _sheet_name(key), patches)
+    else:
+        _patch_cells_local(key, patches)
+    clear_reference_cache(key)
+
+
+def save_reference(
+    key: str,
+    df: pd.DataFrame,
+    *,
+    expected_row_count: int | None = None,
+) -> None:
+    """Полная синхронизация справочника (использовать только при необходимости)."""
+    if key not in _REFERENCE_META:
+        raise ValueError(f"Неизвестный справочник: {key}")
+
+    if sheets_configured():
+        if expected_row_count is None:
+            expected_row_count = _worksheet_row_count(
+                _spreadsheet_id(), _sheet_name(key)
+            )
+        _save_to_sheets(
+            _spreadsheet_id(),
+            _sheet_name(key),
+            df,
+            expected_row_count=expected_row_count,
+        )
+    else:
+        _save_local_reference(key, df)
+    clear_reference_cache(key)
+
+
+def clear_reference_cache(key: str | None = None) -> None:
+    """Сбрасывает кэш чтения: для одного справочника или для всех."""
+    if key is None:
+        _load_from_sheets_cached.clear()
+        return
+    if sheets_configured():
+        _load_from_sheets_cached.clear(_spreadsheet_id(), _sheet_name(key))

@@ -50,11 +50,12 @@ from data.references import (
     REF_DZ_SPEC,
     REF_DZ_TRAD,
     REF_SALES_POD_CARTRIDGE,
+    append_reference_rows,
     get_reference_label,
     get_reference_title,
     load_reference,
+    load_reference_fresh,
     reference_exists,
-    save_reference,
 )
 from features.hardware_sales_dynamics import (
     HARDWARE_CATEGORY_OPTIONS,
@@ -64,7 +65,10 @@ from features.hardware_sales_dynamics import (
     category_label_to_level,
     product_level_to_category,
 )
-from features.reference_update import add_client_to_reference, add_product_to_reference
+from features.reference_update import (
+    batch_add_clients_to_reference,
+    batch_add_products_to_reference,
+)
 from features.upload_help import render_block_title_with_help
 
 # Акцент для суммы ДЗ и числа контрагентов в заголовках (рядом с жирным текстом)
@@ -771,18 +775,25 @@ def render_special_retail_dashboard(
                             type="primary",
                         ):
                             try:
+                                fresh_ref_df = load_reference_fresh(
+                                    REF_SALES_POD_CARTRIDGE
+                                )
+                                start_len = len(fresh_ref_df)
                                 updated_ref, added_names = (
                                     append_products_to_cartridge_reference(
-                                        cartridge_ref_df,
+                                        fresh_ref_df,
                                         products_to_add,
                                     )
                                 )
                                 if not added_names:
                                     st.info("Все найденные товары уже есть в справочнике.")
                                 else:
-                                    save_reference(
+                                    new_rows = updated_ref.iloc[start_len:].to_dict(
+                                        "records"
+                                    )
+                                    append_reference_rows(
                                         REF_SALES_POD_CARTRIDGE,
-                                        updated_ref,
+                                        new_rows,
                                     )
                                     for product in products_to_add:
                                         if product.name not in added_names:
@@ -1047,59 +1058,78 @@ def _render_quick_reference_update(
     products_added = 0
     dz_added = 0
     failed_messages: list[str] = []
+    references_changed = False
 
-    for client in new_clients:
-        selected_subdivision = st.session_state.get(f"new_client_subdivision_{client}", "")
-        ok, message = add_client_to_reference(client, selected_subdivision)
-        if ok:
-            if "Обновлён клиент" in message:
-                clients_updated += 1
+    if new_clients:
+        client_items = [
+            (
+                client,
+                st.session_state.get(f"new_client_subdivision_{client}", ""),
+            )
+            for client in new_clients
+        ]
+        for (client, selected_subdivision), (ok, message) in zip(
+            client_items,
+            batch_add_clients_to_reference(client_items),
+            strict=True,
+        ):
+            if ok:
+                references_changed = True
+                if "Обновлён клиент" in message:
+                    clients_updated += 1
+                    _append_reference_addition(
+                        "Клиент (обновлено)",
+                        client,
+                        "Контрагенты",
+                        f"Подразделение: {selected_subdivision}",
+                    )
+                else:
+                    clients_added += 1
+                    _append_reference_addition(
+                        "Клиент (новый)",
+                        client,
+                        "Контрагенты",
+                        f"Подразделение: {selected_subdivision}",
+                    )
+            else:
+                failed_messages.append(message)
+
+    if unmatched_products:
+        product_items = [
+            (
+                product_levels,
+                st.session_state.get(f"new_product_category_{idx}", ""),
+                st.session_state.get(f"new_product_slice1_{idx}", ""),
+                st.session_state.get(f"new_product_slice2_{idx}", ""),
+            )
+            for idx, product_levels in enumerate(unmatched_products)
+        ]
+        for item, (ok, message) in zip(
+            product_items,
+            batch_add_products_to_reference(product_items),
+            strict=True,
+        ):
+            product_levels, selected_category, selected_slice1, selected_slice2 = item
+            if ok:
+                references_changed = True
+                products_added += 1
+                p1, p2, p3 = product_levels
+                product_title = " / ".join(
+                    [p for p in (p1, p2, p3) if p and p != "__NONE__"]
+                )
+                dist_parts = [f"Категория: {selected_category}"]
+                if str(selected_slice1).strip():
+                    dist_parts.append(f"Разрез 1: {selected_slice1}")
+                if str(selected_slice2).strip():
+                    dist_parts.append(f"Разрез 2: {selected_slice2}")
                 _append_reference_addition(
-                    "Клиент (обновлено)",
-                    client,
-                    "Контрагенты",
-                    f"Подразделение: {selected_subdivision}",
+                    "Товар",
+                    product_title,
+                    "Категории товаров",
+                    "; ".join(dist_parts),
                 )
             else:
-                clients_added += 1
-                _append_reference_addition(
-                    "Клиент (новый)",
-                    client,
-                    "Контрагенты",
-                    f"Подразделение: {selected_subdivision}",
-                )
-        else:
-            failed_messages.append(message)
-
-    for idx, product_levels in enumerate(unmatched_products):
-        selected_category = st.session_state.get(f"new_product_category_{idx}", "")
-        selected_slice1 = st.session_state.get(f"new_product_slice1_{idx}", "")
-        selected_slice2 = st.session_state.get(f"new_product_slice2_{idx}", "")
-        ok, message = add_product_to_reference(
-            product_levels=product_levels,
-            category=selected_category,
-            slice1=selected_slice1,
-            slice2=selected_slice2,
-        )
-        if ok:
-            products_added += 1
-            p1, p2, p3 = product_levels
-            product_title = " / ".join(
-                [p for p in (p1, p2, p3) if p and p != "__NONE__"]
-            )
-            dist_parts = [f"Категория: {selected_category}"]
-            if str(selected_slice1).strip():
-                dist_parts.append(f"Разрез 1: {selected_slice1}")
-            if str(selected_slice2).strip():
-                dist_parts.append(f"Разрез 2: {selected_slice2}")
-            _append_reference_addition(
-                "Товар",
-                product_title,
-                "Категории товаров",
-                "; ".join(dist_parts),
-            )
-        else:
-            failed_messages.append(message)
+                failed_messages.append(message)
 
     if not dz_pending.empty:
         target_map = {
@@ -1107,20 +1137,31 @@ def _render_quick_reference_update(
             "традиция": REF_DZ_TRAD,
             "убрать": REF_DZ_REMOVE,
         }
+        dz_by_ref: dict[str, list[tuple[str, str]]] = {}
         for idx, row in dz_pending.reset_index(drop=True).iterrows():
             target = st.session_state.get(f"dz_distribution_target_{idx}", "спец розница")
             ref_key = target_map[target]
-            ok, message = _append_counterparty_to_dz_reference(ref_key, str(row["Контрагент"]))
-            if ok:
-                dz_added += 1
-                _append_reference_addition(
-                    "ДЗ контрагент",
-                    str(row["Контрагент"]),
-                    get_reference_title(ref_key),
-                    f"Справочник: {get_reference_label(ref_key)}; выбор: {target}",
-                )
-            else:
-                failed_messages.append(message)
+            dz_by_ref.setdefault(ref_key, []).append(
+                (str(row["Контрагент"]), target)
+            )
+        for ref_key, entries in dz_by_ref.items():
+            names = [name for name, _ in entries]
+            for (counterparty, target), (ok, message) in zip(
+                entries,
+                _batch_append_counterparties_to_dz_reference(ref_key, names),
+                strict=True,
+            ):
+                if ok and message != "Контрагент уже есть в справочнике.":
+                    references_changed = True
+                    dz_added += 1
+                    _append_reference_addition(
+                        "ДЗ контрагент",
+                        counterparty,
+                        get_reference_title(ref_key),
+                        f"Справочник: {get_reference_label(ref_key)}; выбор: {target}",
+                    )
+                elif not ok:
+                    failed_messages.append(message)
 
     if clients_added:
         st.success(f"Добавлено клиентов: {clients_added}")
@@ -1133,7 +1174,11 @@ def _render_quick_reference_update(
     for msg in failed_messages:
         st.warning(msg)
 
-    if clients_added or clients_updated or products_added or dz_added:
+    if references_changed:
+        _refresh_reference_session_state(
+            contractors_updated=bool(clients_added or clients_updated),
+            categories_updated=bool(products_added),
+        )
         st.rerun()
 
 
@@ -1187,20 +1232,29 @@ def _render_dz_counterparties_distribution(
     added = 0
     failed_messages: list[str] = []
     pending_rows = pending.reset_index(drop=True)
+    dz_by_ref: dict[str, list[tuple[str, str]]] = {}
     for idx, row in pending_rows.iterrows():
         target = st.session_state.get(f"dz_standalone_target_{idx}", "спец розница")
         ref_key = target_map[target]
-        ok, message = _append_counterparty_to_dz_reference(ref_key, str(row["Контрагент"]))
-        if ok:
-            added += 1
-            _append_reference_addition(
-                "ДЗ контрагент",
-                str(row["Контрагент"]),
-                get_reference_title(ref_key),
-                f"Справочник: {get_reference_label(ref_key)}; выбор: {target}",
-            )
-        else:
-            failed_messages.append(message)
+        dz_by_ref.setdefault(ref_key, []).append((str(row["Контрагент"]), target))
+
+    for ref_key, entries in dz_by_ref.items():
+        names = [name for name, _ in entries]
+        for (counterparty, target), (ok, message) in zip(
+            entries,
+            _batch_append_counterparties_to_dz_reference(ref_key, names),
+            strict=True,
+        ):
+            if ok and message != "Контрагент уже есть в справочнике.":
+                added += 1
+                _append_reference_addition(
+                    "ДЗ контрагент",
+                    counterparty,
+                    get_reference_title(ref_key),
+                    f"Справочник: {get_reference_label(ref_key)}; выбор: {target}",
+                )
+            elif not ok:
+                failed_messages.append(message)
 
     if added:
         st.success(f"Распределено контрагентов ДЗ: {added}")
@@ -1262,34 +1316,93 @@ def _load_dz_reference_keys(ref_key: str) -> set[str]:
     )
 
 
-def _append_counterparty_to_dz_reference(ref_key: str, counterparty: str) -> tuple[bool, str]:
+def _refresh_reference_session_state(
+    *,
+    contractors_updated: bool = False,
+    categories_updated: bool = False,
+) -> None:
+    """Обновляет кэшированные в session_state справочники после записи."""
+    if categories_updated:
+        try:
+            st.session_state.categories_df = load_reference(REF_CATEGORIES, fresh=True)
+        except Exception:  # noqa: BLE001
+            pass
+    if contractors_updated:
+        try:
+            st.session_state.contractors_df = load_reference(
+                REF_CONTRACTORS, fresh=True
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _batch_append_counterparties_to_dz_reference(
+    ref_key: str,
+    counterparties: list[str],
+) -> list[tuple[bool, str]]:
     label = get_reference_label(ref_key)
+    if not counterparties:
+        return []
+
     if not reference_exists(ref_key):
-        return False, f"Справочник не найден: {label}"
+        message = f"Справочник не найден: {label}"
+        return [(False, message) for _ in counterparties]
+
     try:
-        df = load_reference(ref_key)
+        df = load_reference_fresh(ref_key)
     except Exception as exc:  # noqa: BLE001
-        return False, f"Не удалось прочитать {label}: {exc}"
+        message = f"Не удалось прочитать {label}: {exc}"
+        return [(False, message) for _ in counterparties]
+
     if "Контрагент" not in df.columns:
-        return False, f"В справочнике {label} нет столбца «Контрагент»."
+        message = f"В справочнике {label} нет столбца «Контрагент»."
+        return [(False, message) for _ in counterparties]
 
-    value = str(counterparty).strip()
-    if not value:
-        return False, "Пустое имя контрагента."
-    norm_existing = (
-        df["Контрагент"].fillna("").astype(str).str.strip().map(_normalize_client_name)
+    norm_existing = set(
+        df["Контрагент"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .map(_normalize_client_name)
+        .tolist()
     )
-    if _normalize_client_name(value) in set(norm_existing.tolist()):
-        return True, "Контрагент уже есть в справочнике."
+    results: list[tuple[bool, str]] = []
+    rows_to_append: list[dict[str, object]] = []
 
-    new_row = {col: "" for col in df.columns}
-    new_row["Контрагент"] = value
-    updated = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-    try:
-        save_reference(ref_key, updated)
-    except Exception as exc:  # noqa: BLE001
-        return False, f"Не удалось записать {label}: {exc}"
-    return True, f"Добавлен контрагент в {get_reference_title(ref_key)}"
+    for counterparty in counterparties:
+        value = str(counterparty).strip()
+        if not value:
+            results.append((False, "Пустое имя контрагента."))
+            continue
+        norm_value = _normalize_client_name(value)
+        if norm_value in norm_existing:
+            results.append((True, "Контрагент уже есть в справочнике."))
+            continue
+
+        new_row = {col: "" for col in df.columns}
+        new_row["Контрагент"] = value
+        rows_to_append.append(new_row)
+        norm_existing.add(norm_value)
+        results.append(
+            (True, f"Добавлен контрагент в {get_reference_title(ref_key)}")
+        )
+
+    if rows_to_append:
+        try:
+            append_reference_rows(ref_key, rows_to_append)
+        except Exception as exc:  # noqa: BLE001
+            message = f"Не удалось записать {label}: {exc}"
+            return [
+                (False, message) if ok else (ok, msg)
+                for ok, msg in results
+            ]
+
+    return results
+
+
+def _append_counterparty_to_dz_reference(ref_key: str, counterparty: str) -> tuple[bool, str]:
+    results = _batch_append_counterparties_to_dz_reference(ref_key, [counterparty])
+    return results[0] if results else (False, "Нет данных для добавления.")
 
 
 def _build_dz_spec_table(
@@ -2101,7 +2214,7 @@ def _extract_orders_week_number(
 
 def _read_latest_reference(ref_key: str, fallback_df: pd.DataFrame) -> pd.DataFrame:
     try:
-        return load_reference(ref_key)
+        return load_reference(ref_key, fresh=True)
     except Exception:  # noqa: BLE001
         return fallback_df
 
