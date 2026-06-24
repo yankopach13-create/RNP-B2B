@@ -7,8 +7,9 @@ import streamlit as st
 # --- подготовка путей -----------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
+# src — в начало: иначе корневая папка data/reference/ перекрывает пакет src/data/
 if str(SRC_DIR) not in sys.path:
-    sys.path.append(str(SRC_DIR))
+    sys.path.insert(0, str(SRC_DIR))
 
 # --- собственные модули ----------------------------------------------------------------------------
 from data.references import (  # noqa: E402
