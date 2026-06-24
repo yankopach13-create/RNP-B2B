@@ -14,8 +14,9 @@ if str(SRC_DIR) not in sys.path:
 from data.references import (  # noqa: E402
     REF_CATEGORIES,
     REF_CONTRACTORS,
+    clear_session_references,
     get_reference_label,
-    load_reference,
+    preload_references,
     sheets_configured,
 )
 from features.dashboard import (  # noqa: E402
@@ -325,14 +326,16 @@ def main() -> None:
     if st.button("Загрузить данные", type="primary", key="load_data_btn"):
         st.session_state.data_loaded = True
         st.session_state.pop(CLIENT_BLOCK_WEEK_INPUT_KEY, None)
+        clear_session_references()
 
     if not st.session_state.data_loaded:
         return
 
-    # Загружаем справочники (Google Sheets или локальные xlsx)
+    # Загружаем справочники один раз в session_state (без лишних запросов к API)
     try:
-        contractors_df = load_reference(REF_CONTRACTORS)
-        categories_df = load_reference(REF_CATEGORIES)
+        refs = preload_references()
+        contractors_df = refs[REF_CONTRACTORS]
+        categories_df = refs[REF_CATEGORIES]
     except Exception as exc:  # noqa: BLE001
         source = "Google Sheets" if sheets_configured() else "локальных файлов"
         st.error(f"Не удалось загрузить справочники из {source}: {exc}")
@@ -374,7 +377,8 @@ def main() -> None:
         )
         return
 
-    # Store categories_df in session state for factor analysis (если загружен)
+    # Store reference dfs in session state for reuse across reruns
+    st.session_state.contractors_df = contractors_df
     if categories_df is not None:
         st.session_state.categories_df = categories_df
 

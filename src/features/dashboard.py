@@ -54,8 +54,6 @@ from data.references import (
     get_reference_label,
     get_reference_title,
     load_reference,
-    load_reference_fresh,
-    reference_exists,
 )
 from features.hardware_sales_dynamics import (
     HARDWARE_CATEGORY_OPTIONS,
@@ -675,23 +673,21 @@ def render_special_retail_dashboard(
             image_name="Dynamic.png",
             align="left",
         )
-        if not reference_exists(REF_SALES_POD_CARTRIDGE):
+        try:
+            cartridge_ref_df = load_reference(REF_SALES_POD_CARTRIDGE)
+        except Exception as exc:  # noqa: BLE001
             st.warning(
                 f"Справочник не найден: {get_reference_label(REF_SALES_POD_CARTRIDGE)}. "
                 "Добавьте лист Sales_pod_cartridge в Google Sheets или файл "
                 "Sales_pod_cartridge.xlsx в data/reference."
             )
-        else:
-            try:
-                cartridge_ref_df = load_reference(REF_SALES_POD_CARTRIDGE)
-            except Exception as exc:  # noqa: BLE001
-                st.error(
-                    f"Не удалось загрузить справочник "
-                    f"{get_reference_label(REF_SALES_POD_CARTRIDGE)}: {exc}"
-                )
-                cartridge_ref_df = None
+            st.error(
+                f"Не удалось загрузить справочник "
+                f"{get_reference_label(REF_SALES_POD_CARTRIDGE)}: {exc}"
+            )
+            cartridge_ref_df = None
 
-            if cartridge_ref_df is not None:
+        if cartridge_ref_df is not None:
                 st.markdown(
                     """
                     <style>
@@ -775,7 +771,7 @@ def render_special_retail_dashboard(
                             type="primary",
                         ):
                             try:
-                                fresh_ref_df = load_reference_fresh(
+                                fresh_ref_df = load_reference(
                                     REF_SALES_POD_CARTRIDGE
                                 )
                                 start_len = len(fresh_ref_df)
@@ -1296,8 +1292,6 @@ def _collect_unassigned_dz_counterparties(
 
 
 def _load_dz_reference_keys(ref_key: str) -> set[str]:
-    if not reference_exists(ref_key):
-        return set()
     try:
         df = load_reference(ref_key)
     except Exception:  # noqa: BLE001
@@ -1321,17 +1315,15 @@ def _refresh_reference_session_state(
     contractors_updated: bool = False,
     categories_updated: bool = False,
 ) -> None:
-    """Обновляет кэшированные в session_state справочники после записи."""
+    """Синхронизирует session_state с кэшем справочников после записи."""
     if categories_updated:
         try:
-            st.session_state.categories_df = load_reference(REF_CATEGORIES, fresh=True)
+            st.session_state.categories_df = load_reference(REF_CATEGORIES)
         except Exception:  # noqa: BLE001
             pass
     if contractors_updated:
         try:
-            st.session_state.contractors_df = load_reference(
-                REF_CONTRACTORS, fresh=True
-            )
+            st.session_state.contractors_df = load_reference(REF_CONTRACTORS)
         except Exception:  # noqa: BLE001
             pass
 
@@ -1344,12 +1336,8 @@ def _batch_append_counterparties_to_dz_reference(
     if not counterparties:
         return []
 
-    if not reference_exists(ref_key):
-        message = f"Справочник не найден: {label}"
-        return [(False, message) for _ in counterparties]
-
     try:
-        df = load_reference_fresh(ref_key)
+        df = load_reference(ref_key)
     except Exception as exc:  # noqa: BLE001
         message = f"Не удалось прочитать {label}: {exc}"
         return [(False, message) for _ in counterparties]
@@ -1408,8 +1396,6 @@ def _append_counterparty_to_dz_reference(ref_key: str, counterparty: str) -> tup
 def _build_dz_spec_table(
     receivables_df: pd.DataFrame | None,
 ) -> tuple[pd.DataFrame, float, str | None]:
-    if not reference_exists(REF_DZ_SPEC):
-        return pd.DataFrame(), 0.0, f"Справочник не найден: {get_reference_label(REF_DZ_SPEC)}"
     try:
         dz_ref_df = load_reference(REF_DZ_SPEC)
     except Exception as exc:  # noqa: BLE001
@@ -1516,8 +1502,6 @@ def _calc_dz_total_by_reference(
 ) -> tuple[float, str | None]:
     if receivables_df is None or receivables_df.empty:
         return 0.0, "no_receivables"
-    if not reference_exists(reference_key):
-        return 0.0, "no_reference"
     try:
         ref_df = load_reference(reference_key)
     except Exception:  # noqa: BLE001
@@ -2214,7 +2198,7 @@ def _extract_orders_week_number(
 
 def _read_latest_reference(ref_key: str, fallback_df: pd.DataFrame) -> pd.DataFrame:
     try:
-        return load_reference(ref_key, fresh=True)
+        return load_reference(ref_key)
     except Exception:  # noqa: BLE001
         return fallback_df
 

@@ -7,7 +7,7 @@ from data.references import (
     REF_CONTRACTORS,
     append_reference_rows,
     get_reference_label,
-    load_reference_fresh,
+    load_reference,
     patch_reference_cells,
     reference_exists,
 )
@@ -45,7 +45,7 @@ def batch_add_clients_to_reference(
         return [(False, message) for _ in items]
 
     try:
-        df = load_reference_fresh(REF_CONTRACTORS)
+        df = load_reference(REF_CONTRACTORS)
     except Exception as exc:  # noqa: BLE001
         message = f"Не удалось прочитать справочник контрагентов: {exc}"
         return [(False, message) for _ in items]
@@ -135,7 +135,7 @@ def batch_add_products_to_reference(
         return [(False, message) for _ in items]
 
     try:
-        df = load_reference_fresh(REF_CATEGORIES)
+        df = load_reference(REF_CATEGORIES)
     except Exception as exc:  # noqa: BLE001
         message = f"Не удалось прочитать справочник категорий: {exc}"
         return [(False, message) for _ in items]

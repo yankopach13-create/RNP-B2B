@@ -20,6 +20,14 @@ REF_DZ_TRAD = "dz_trad"
 REF_DZ_REMOVE = "dz_remove"
 REF_SALES_POD_CARTRIDGE = "sales_pod_cartridge"
 
+DEFAULT_PRELOAD_KEYS: tuple[str, ...] = (
+    REF_CONTRACTORS,
+    REF_CATEGORIES,
+    REF_DZ_SPEC,
+    REF_DZ_TRAD,
+    REF_DZ_REMOVE,
+)
+
 _REFERENCE_META: dict[str, dict[str, str]] = {
     REF_CONTRACTORS: {
         "sheet": "contractors",
@@ -58,8 +66,11 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 _PLACEHOLDER_SPREADSHEET_ID = "REPLACE_WITH_YOUR_SPREADSHEET_ID"
+_REFERENCES_SESSION_KEY = "references_session_cache"
+_SHEETS_CACHE_TTL_SEC = 600
 _API_MAX_ATTEMPTS = 3
 _API_RETRY_DELAY_SEC = 0.6
+_API_QUOTA_RETRY_DELAY_SEC = 35
 
 T = TypeVar("T")
 
@@ -110,14 +121,29 @@ def get_reference_label(key: str) -> str:
     return _REFERENCE_META[key]["local"]
 
 
+def _session_ref_cache() -> dict[str, pd.DataFrame]:
+    if _REFERENCES_SESSION_KEY not in st.session_state:
+        st.session_state[_REFERENCES_SESSION_KEY] = {}
+    return st.session_state[_REFERENCES_SESSION_KEY]
+
+
+def clear_session_references() -> None:
+    """Сбрасывает кэш справочников в session_state (при новой загрузке данных)."""
+    st.session_state.pop(_REFERENCES_SESSION_KEY, None)
+
+
 def reference_exists(key: str) -> bool:
+    if key not in _REFERENCE_META:
+        return False
+    if key in _session_ref_cache():
+        return True
     if sheets_configured():
         try:
-            load_reference(key)
+            _open_worksheet(_spreadsheet_id(), _sheet_name(key))
             return True
         except Exception:  # noqa: BLE001
             return False
-    return (REF_DIR / _REFERENCE_META[key]["local"]).exists()
+    return _local_path(key).exists()
 
 
 def _resolve_ssl_verify() -> bool | str:
@@ -154,6 +180,11 @@ def _apply_ssl_verify(client) -> None:
         client.http_client.session.verify = verify
 
 
+def _is_quota_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "429" in message or "quota exceeded" in message
+
+
 def _retry_sheets_api(operation: Callable[[], T], *, action: str) -> T:
     last_error: Exception | None = None
     for attempt in range(1, _API_MAX_ATTEMPTS + 1):
@@ -163,7 +194,10 @@ def _retry_sheets_api(operation: Callable[[], T], *, action: str) -> T:
             last_error = exc
             if attempt >= _API_MAX_ATTEMPTS:
                 break
-            time.sleep(_API_RETRY_DELAY_SEC * attempt)
+            if _is_quota_error(exc):
+                time.sleep(_API_QUOTA_RETRY_DELAY_SEC * attempt)
+            else:
+                time.sleep(_API_RETRY_DELAY_SEC * attempt)
     raise RuntimeError(f"Не удалось выполнить операцию «{action}»: {last_error}") from last_error
 
 
@@ -197,7 +231,7 @@ def _fetch_worksheet_values(spreadsheet_id: str, worksheet_name: str) -> list[li
     return _retry_sheets_api(_read, action=f"чтение листа «{worksheet_name}»")
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=_SHEETS_CACHE_TTL_SEC, show_spinner=False)
 def _load_from_sheets_cached(spreadsheet_id: str, worksheet_name: str) -> pd.DataFrame:
     rows = _fetch_worksheet_values(spreadsheet_id, worksheet_name)
     return _values_to_dataframe(rows)
@@ -231,15 +265,23 @@ def _append_rows_to_sheets(
     spreadsheet_id: str,
     worksheet_name: str,
     rows: list[dict[str, object]],
+    *,
+    header: list[str] | None = None,
 ) -> None:
     if not rows:
         return
 
     def _append() -> None:
         worksheet = _open_worksheet(spreadsheet_id, worksheet_name)
-        values = worksheet.get_all_values()
-        header = [str(col).strip() for col in values[0]] if values else list(rows[0].keys())
-        sheet_rows = _row_dicts_to_sheet_rows(header, rows)
+        resolved_header = header
+        if not resolved_header:
+            values = worksheet.get_all_values()
+            resolved_header = (
+                [str(col).strip() for col in values[0]]
+                if values
+                else list(rows[0].keys())
+            )
+        sheet_rows = _row_dicts_to_sheet_rows(resolved_header, rows)
         worksheet.append_rows(
             sheet_rows,
             value_input_option="USER_ENTERED",
@@ -253,6 +295,8 @@ def _patch_cells_in_sheets(
     spreadsheet_id: str,
     worksheet_name: str,
     patches: list[tuple[int, str, object]],
+    *,
+    columns: list[str] | None = None,
 ) -> None:
     """Обновляет ячейки: (индекс строки в DataFrame, имя столбца, значение)."""
     if not patches:
@@ -262,10 +306,14 @@ def _patch_cells_in_sheets(
 
     def _patch() -> None:
         worksheet = _open_worksheet(spreadsheet_id, worksheet_name)
-        values = worksheet.get_all_values()
-        if not values:
-            raise RuntimeError(f"Лист «{worksheet_name}» пуст — нельзя обновить ячейки.")
-        header = [str(col).strip() for col in values[0]]
+        header = [str(col).strip() for col in columns] if columns else None
+        if header is None:
+            values = worksheet.get_all_values()
+            if not values:
+                raise RuntimeError(
+                    f"Лист «{worksheet_name}» пуст — нельзя обновить ячейки."
+                )
+            header = [str(col).strip() for col in values[0]]
         col_index = {name: idx + 1 for idx, name in enumerate(header)}
         batch_data: list[dict[str, object]] = []
         for df_index, column_name, value in patches:
@@ -363,8 +411,7 @@ def _patch_cells_local(key: str, patches: list[tuple[int, str, object]]) -> None
     _save_local_reference(key, df)
 
 
-def load_reference(key: str, *, fresh: bool = False) -> pd.DataFrame:
-    """Загружает справочник. fresh=True — всегда без кэша (для записи)."""
+def _load_reference_data(key: str, *, fresh: bool = False) -> pd.DataFrame:
     if key not in _REFERENCE_META:
         raise ValueError(f"Неизвестный справочник: {key}")
 
@@ -378,9 +425,65 @@ def load_reference(key: str, *, fresh: bool = False) -> pd.DataFrame:
     return _load_local_reference(key)
 
 
+def _store_session_reference(key: str, df: pd.DataFrame) -> None:
+    _session_ref_cache()[key] = df.copy()
+
+
+def _append_rows_to_session_cache(key: str, rows: list[dict[str, object]]) -> None:
+    if not rows:
+        return
+    cache = _session_ref_cache()
+    if key not in cache:
+        return
+    current = cache[key]
+    header = list(current.columns)
+    new_df = pd.DataFrame(
+        [{col: row.get(col, "") for col in header} for row in rows]
+    )
+    cache[key] = pd.concat([current, new_df], ignore_index=True)
+
+
+def _patch_session_cache(key: str, patches: list[tuple[int, str, object]]) -> None:
+    if not patches or key not in _session_ref_cache():
+        return
+    df = _session_ref_cache()[key]
+    for df_index, column_name, value in patches:
+        df.loc[df_index, column_name] = value
+
+
+def preload_references(
+    keys: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Загружает справочники в session_state. Повторные вызовы не ходят в API."""
+    keys_to_load = list(keys or DEFAULT_PRELOAD_KEYS)
+    cache = _session_ref_cache()
+    for key in keys_to_load:
+        if key not in cache:
+            cache[key] = _load_reference_data(key, fresh=False)
+    return {key: cache[key].copy() for key in keys_to_load if key in cache}
+
+
+def load_reference(key: str, *, fresh: bool = False) -> pd.DataFrame:
+    """Загружает справочник. fresh=True — из API; иначе session_state → кэш."""
+    if key not in _REFERENCE_META:
+        raise ValueError(f"Неизвестный справочник: {key}")
+
+    if not fresh:
+        cached = _session_ref_cache().get(key)
+        if cached is not None:
+            return cached.copy()
+
+    df = _load_reference_data(key, fresh=fresh)
+    _store_session_reference(key, df)
+    return df.copy()
+
+
 def load_reference_fresh(key: str) -> pd.DataFrame:
-    """Свежая копия справочника без кэша — только для операций записи."""
-    return load_reference(key, fresh=True)
+    """Свежая копия справочника из API — только для операций записи."""
+    df = _load_reference_data(key, fresh=True)
+    _store_session_reference(key, df)
+    clear_reference_cache(key)
+    return df.copy()
 
 
 def append_reference_rows(key: str, rows: list[dict[str, object]]) -> None:
@@ -390,10 +493,22 @@ def append_reference_rows(key: str, rows: list[dict[str, object]]) -> None:
     if not rows:
         return
 
+    header: list[str] | None = None
+    cached = _session_ref_cache().get(key)
+    if cached is not None and not cached.empty:
+        header = [str(col) for col in cached.columns]
+
     if sheets_configured():
-        _append_rows_to_sheets(_spreadsheet_id(), _sheet_name(key), rows)
+        _append_rows_to_sheets(
+            _spreadsheet_id(),
+            _sheet_name(key),
+            rows,
+            header=header,
+        )
     else:
         _append_rows_local(key, rows)
+
+    _append_rows_to_session_cache(key, rows)
     clear_reference_cache(key)
 
 
@@ -406,10 +521,22 @@ def patch_reference_cells(
     if not patches:
         return
 
+    columns: list[str] | None = None
+    cached = _session_ref_cache().get(key)
+    if cached is not None and not cached.empty:
+        columns = [str(col) for col in cached.columns]
+
     if sheets_configured():
-        _patch_cells_in_sheets(_spreadsheet_id(), _sheet_name(key), patches)
+        _patch_cells_in_sheets(
+            _spreadsheet_id(),
+            _sheet_name(key),
+            patches,
+            columns=columns,
+        )
     else:
         _patch_cells_local(key, patches)
+
+    _patch_session_cache(key, patches)
     clear_reference_cache(key)
 
 
@@ -436,11 +563,12 @@ def save_reference(
         )
     else:
         _save_local_reference(key, df)
+    _store_session_reference(key, df)
     clear_reference_cache(key)
 
 
 def clear_reference_cache(key: str | None = None) -> None:
-    """Сбрасывает кэш чтения: для одного справочника или для всех."""
+    """Сбрасывает глобальный кэш чтения: для одного справочника или для всех."""
     if key is None:
         _load_from_sheets_cached.clear()
         return
