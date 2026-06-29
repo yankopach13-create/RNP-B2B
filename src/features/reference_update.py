@@ -62,6 +62,7 @@ def batch_add_clients_to_reference(
         df["Контрагент"].fillna("").astype(str).str.strip().str.lower()
     )
     subdivisions_norm = df["Подразделение"].fillna("").astype(str).str.strip()
+    pending_client_names: set[str] = set()
 
     for client_name, subdivision in items:
         client = str(client_name).strip()
@@ -75,7 +76,16 @@ def batch_add_clients_to_reference(
             )
             continue
 
-        matched_idx = df.index[existing_clients_norm == client.lower()].tolist()
+        client_lower = client.lower()
+        if client_lower in pending_client_names:
+            results.append(
+                (False, f"Клиент «{client}» уже добавлен в этой операции.")
+            )
+            continue
+
+        matched_idx = df.index[
+            existing_clients_norm.to_numpy() == client_lower
+        ].tolist()
         if matched_idx:
             empty_subdivision_idx = [
                 idx for idx in matched_idx if not subdivisions_norm.loc[idx]
@@ -101,10 +111,7 @@ def batch_add_clients_to_reference(
         if "Сегмент" in df.columns:
             new_row["Сегмент"] = "C"
         rows_to_append.append(new_row)
-        existing_clients_norm = pd.concat(
-            [existing_clients_norm, pd.Series([client.lower()])],
-            ignore_index=True,
-        )
+        pending_client_names.add(client_lower)
         results.append((True, f"Добавлен клиент «{client}»."))
 
     try:
