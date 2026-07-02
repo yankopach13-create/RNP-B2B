@@ -9,6 +9,7 @@ from features.category_order import (
     get_category_source_column,
     get_razrez_source_column,
     load_category_order_list,
+    match_spec_mask,
     normalize_razrez_value,
     parse_category_order,
 )
@@ -101,14 +102,7 @@ def _detect_product_level_column(df: pd.DataFrame) -> str | None:
 def _slice_by_spec(df: pd.DataFrame, spec: CategoryRowSpec) -> pd.DataFrame:
     if df.empty:
         return df
-    categories = df["Категория агрег."].fillna("").astype(str).str.strip()
-    razrez = df["Разрез"].fillna("").astype(str).map(normalize_razrez_value)
-    if spec.is_slice:
-        if not spec.razrez or not spec.parent_category:
-            return df.iloc[0:0]
-        mask = categories.eq(spec.parent_category) & razrez.eq(spec.razrez)
-    else:
-        mask = categories.eq(spec.parent_category)
+    mask = match_spec_mask(df, spec)
     return df.loc[mask]
 
 

@@ -119,9 +119,11 @@ def prepare_dataset(
     merged["Подразделение"] = merged["Подразделение"].replace("", np.nan).astype("string")
     merged["Сегмент"] = merged["Сегмент"].fillna("").astype("string")
 
-    # Special case for hookah coal to include in "Прочее"
-    mask_hookah_coal = merged[PRODUCT_COLUMNS].astype(str).apply(lambda x: x.str.contains("Уголь", case=False, na=False)).any(axis=1)
-    merged.loc[mask_hookah_coal, "Разрез"] = "Прочее"
+    # Уголь для кальянов: если в справочнике разрез не задан — помечаем как «уголь»
+    mask_hookah_coal = merged[PRODUCT_COLUMNS].astype(str).apply(
+        lambda x: x.str.contains("Уголь", case=False, na=False)
+    ).any(axis=1)
+    merged.loc[mask_hookah_coal & merged["Разрез"].eq(""), "Разрез"] = "уголь"
 
     new_clients = (
         merged.loc[merged["Подразделение"].isna(), "Клиент"].dropna().astype("string").unique().tolist()

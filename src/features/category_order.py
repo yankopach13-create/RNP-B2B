@@ -89,6 +89,29 @@ def normalize_razrez_value(value: object) -> str:
     return cleaned
 
 
+def _label_key(value: object) -> str:
+    """Ключ для сравнения подписей категорий и разрезов без учёта регистра."""
+    return str(value or "").strip().casefold()
+
+
+def match_spec_mask(df: pd.DataFrame, spec: CategoryRowSpec) -> pd.Series:
+    """Маска строк DataFrame, попадающих под строку category_order."""
+    if df.empty:
+        return pd.Series(dtype=bool)
+
+    categories = _category_series(df).map(_label_key)
+    parent_key = _label_key(spec.parent_category)
+
+    if spec.is_slice:
+        if not spec.razrez or not spec.parent_category:
+            return pd.Series(False, index=df.index)
+        razrez = _razrez_series(df).map(_label_key)
+        razrez_key = _label_key(spec.razrez)
+        return categories.eq(parent_key) & razrez.eq(razrez_key)
+
+    return categories.eq(parent_key)
+
+
 def load_category_order_list(
     category_order_df: pd.DataFrame | None,
     column_name: str,
@@ -187,16 +210,7 @@ def resolve_spec_value(
         return 0.0
 
     values = pd.to_numeric(df[value_column], errors="coerce").fillna(0.0)
-    categories = _category_series(df)
-    razrez = _razrez_series(df)
-
-    if spec.is_slice:
-        if not spec.razrez or not spec.parent_category:
-            return 0.0
-        mask = categories.eq(spec.parent_category) & razrez.eq(spec.razrez)
-    else:
-        mask = categories.eq(spec.parent_category)
-
+    mask = match_spec_mask(df, spec)
     return float(values.loc[mask].sum())
 
 
@@ -208,8 +222,9 @@ def resolve_label_value(
 ) -> float:
     """Считает значение по подписи строки из category_order."""
     specs = parse_category_order(order)
+    label_key = _label_key(label)
     for spec in specs:
-        if spec.label == label:
+        if _label_key(spec.label) == label_key:
             return resolve_spec_value(df, spec, value_column=value_column)
     fallback = CategoryRowSpec(
         label=label,

@@ -8,6 +8,7 @@ from features.category_order import (
     CategoryRowSpec,
     collect_known_category_names,
     load_category_order_list,
+    match_spec_mask,
     parse_category_order,
 )
 from features.data_prep import (
@@ -114,16 +115,7 @@ def _sum_turnover_metrics(
 
     stock_series = pd.to_numeric(df["Остаток сред.дн. (Q)"], errors="coerce").fillna(0.0)
     sales_series = pd.to_numeric(df["Продажи (Q)"], errors="coerce").fillna(0.0)
-    categories = df["Категория агрег."].fillna("").astype(str).str.strip()
-    razrez = df["Разрез"].fillna("").astype(str).str.strip()
-
-    if spec.is_slice:
-        if not spec.razrez or not spec.parent_category:
-            return 0.0, 0.0
-        mask = categories.eq(spec.parent_category) & razrez.eq(spec.razrez)
-    else:
-        mask = categories.eq(spec.parent_category)
-
+    mask = match_spec_mask(df, spec)
     return float(stock_series.loc[mask].sum()), float(sales_series.loc[mask].sum())
 
 
