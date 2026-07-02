@@ -4,7 +4,13 @@ from typing import Iterable, List, Tuple
 import numpy as np
 import pandas as pd
 
-from config.constants import CATEGORY_DISPLAY_ORDER, CATEGORY_FIXES
+from config.constants import CATEGORY_FIXES
+from features.category_order import (
+    collect_known_category_names,
+    get_category_source_column,
+    get_razrez_source_column,
+    normalize_razrez_value,
+)
 
 PRODUCT_COLUMNS = ["Товар ур.1", "Товар ур.2", "Товар ур.3"]
 OPTIONAL_PRODUCT_COLUMNS = ["Товар ур.4"]
@@ -20,6 +26,7 @@ def prepare_dataset(
     sales_df: pd.DataFrame,
     contractors_df: pd.DataFrame,
     categories_df: pd.DataFrame,
+    category_order_df: pd.DataFrame | None = None,
 ) -> Tuple[pd.DataFrame, List[str], List[Tuple[str, str, str]]]:
     """Соединяет продажи со справочниками контрагентов и категорий.
     
@@ -52,19 +59,15 @@ def prepare_dataset(
         contractors.groupby("Контрагент")["Сегмент"].first().to_dict()
     )
 
-    categories_map = (
-        categories_df[PRODUCT_COLUMNS + ["Категория:", "Разрез 1", "Разрез 2"]]
-        .drop_duplicates()
-        .rename(columns={"Категория:": "Категория агрег."})
+    known_categories = collect_known_category_names(
+        categories_df, category_order_df
     )
-    categories_map = _normalise_product_columns(categories_map)
+    categories_map = _build_categories_map(categories_df)
     categories_map["Категория агрег."] = (
-        categories_map["Категория агрег."].fillna(FALLBACK_SUBCATEGORY).apply(
-            _normalise_category_name
-        )
+        categories_map["Категория raw"]
+        .fillna(FALLBACK_SUBCATEGORY)
+        .apply(lambda name: _normalise_category_name(name, known_categories))
     )
-    categories_map["Разрез 1"] = categories_map["Разрез 1"].fillna("")
-    categories_map["Разрез 2"] = categories_map["Разрез 2"].fillna("")
 
     sales = sales_df.copy()
     sales = _rename_product_level_columns(sales)
@@ -97,24 +100,28 @@ def prepare_dataset(
             .fillna(merged.loc[missing_mask, "Сегмент"])
         )
 
-    merged = merged.merge(categories_map, how="left", on=PRODUCT_COLUMNS)
-    merged["Категория агрег."] = (
-        merged["Категория агрег."].fillna(FALLBACK_SUBCATEGORY).apply(
-            _normalise_category_name
-        )
+    merge_cols = PRODUCT_COLUMNS + ["Категория агрег.", "Разрез"]
+    merged = merged.merge(
+        categories_map[merge_cols].drop_duplicates(),
+        how="left",
+        on=PRODUCT_COLUMNS,
     )
-    merged["Разрез 1"] = merged["Разрез 1"].fillna("")
-    merged["Разрез 2"] = merged["Разрез 2"].fillna("")
+    merged["Категория агрег."] = (
+        merged["Категория агрег."]
+        .fillna(FALLBACK_SUBCATEGORY)
+        .apply(lambda name: _normalise_category_name(name, known_categories))
+    )
+    merged["Разрез"] = merged["Разрез"].fillna("").astype(str).map(normalize_razrez_value)
     merged.loc[
-        merged["Категория агрег."].eq(FALLBACK_SUBCATEGORY) & merged["Разрез 1"].eq(""),
-        "Разрез 1",
+        merged["Категория агрег."].eq(FALLBACK_SUBCATEGORY) & merged["Разрез"].eq(""),
+        "Разрез",
     ] = FALLBACK_SUBCATEGORY
     merged["Подразделение"] = merged["Подразделение"].replace("", np.nan).astype("string")
     merged["Сегмент"] = merged["Сегмент"].fillna("").astype("string")
 
-    # Special case for hookah coal to include in "в т.ч. Прочее"
+    # Special case for hookah coal to include in "Прочее"
     mask_hookah_coal = merged[PRODUCT_COLUMNS].astype(str).apply(lambda x: x.str.contains("Уголь", case=False, na=False)).any(axis=1)
-    merged.loc[mask_hookah_coal, "Разрез 1"] = "в т.ч. Прочее"
+    merged.loc[mask_hookah_coal, "Разрез"] = "Прочее"
 
     new_clients = (
         merged.loc[merged["Подразделение"].isna(), "Клиент"].dropna().astype("string").unique().tolist()
@@ -134,6 +141,29 @@ def prepare_dataset(
     
     merged = merged.dropna(subset=["Подразделение"]).reset_index(drop=True)
     return merged, sorted(new_clients), unmatched_products_list
+
+
+def _build_categories_map(categories_df: pd.DataFrame) -> pd.DataFrame:
+    cat_col = get_category_source_column(categories_df)
+    if cat_col is None:
+        raise ValueError("В справочнике категорий нет столбца «Категория».")
+
+    razrez_col = get_razrez_source_column(categories_df)
+    mapping = categories_df.copy()
+    mapping = _normalise_product_columns(mapping)
+    mapping["Категория raw"] = mapping[cat_col].fillna("").astype(str).str.strip()
+
+    if razrez_col:
+        razrez_raw = mapping[razrez_col].fillna("").astype(str).str.strip()
+    else:
+        razrez_raw = pd.Series([""] * len(mapping), index=mapping.index, dtype="string")
+
+    if "Разрез 2" in mapping.columns:
+        slice2 = mapping["Разрез 2"].fillna("").astype(str).str.strip()
+        razrez_raw = razrez_raw.where(razrez_raw.ne(""), slice2)
+
+    mapping["Разрез"] = razrez_raw.map(normalize_razrez_value)
+    return mapping[PRODUCT_COLUMNS + ["Категория raw", "Разрез"]].drop_duplicates()
 
 def _rename_product_level_columns(df: pd.DataFrame) -> pd.DataFrame:
     rename_map = {
@@ -171,16 +201,24 @@ def _ensure_numeric_columns(df: pd.DataFrame, columns: Iterable[str]) -> None:
             df[col] = 0.0
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-def _normalise_category_name(name: str) -> str:
+def _normalise_category_name(
+    name: str,
+    known_categories: set[str] | None = None,
+) -> str:
     """Приводит название категории к стандартному виду."""
     if not isinstance(name, str):
         return CATEGORY_FALLBACK
     cleaned = name.strip()
     if cleaned in CATEGORY_FIXES:
         return CATEGORY_FIXES[cleaned]
+    if known_categories:
+        if cleaned in known_categories:
+            return cleaned
+        candidate = f"{cleaned}."
+        if candidate in known_categories:
+            return candidate
+        if cleaned.endswith(".") and cleaned[:-1] in known_categories:
+            return cleaned[:-1]
     if cleaned.endswith("."):
         return cleaned
-    candidate = f"{cleaned}."
-    if candidate in CATEGORY_DISPLAY_ORDER:
-        return candidate
     return cleaned

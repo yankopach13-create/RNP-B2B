@@ -5,22 +5,20 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from config.constants import (
-    BRAND_COMPONENTS,
-    MISC_SUM_COMPONENTS,
+from features.category_order import (
+    COL_SPEC_RNP,
+    collect_known_category_names,
+    load_category_order_list,
+    parse_category_order,
+    resolve_spec_value,
 )
-from features.render import _resolve_category_value
+from features.data_prep import (
+    PRODUCT_COLUMNS,
+    _build_categories_map,
+    _normalise_category_name,
+    _normalise_product_columns,
+)
 
-CATEGORY_ROWS = [
-    ("ОЭС 2 мл, шт.", "ОЭС 2 мл, шт."),
-    ("ОЭС 4 мл, шт.", "ОЭС 4 мл, шт."),
-    ("ОЭС 10 мл, шт.", "ОЭС 10 мл, шт."),
-    ("Жидкость 25 мл, шт.", "Жидкость 25 мл, шт."),
-    ("Pod-системы, шт.", "Pod-системы, шт."),
-    ("Расходники, шт.", "Расходники, шт."),
-    ("Картриджи с жидкостью, шт.", "Картриджи с жидкостью, шт."),
-    ("Прочие товары, шт.", "Прочие товары, шт.:"),
-]
 RTRADE_CLIENTS = {
     'ООО "РТрейдИмпорт"',
     'ООО \"РТрейдИмпорт\"',
@@ -31,6 +29,7 @@ RTRADE_CLIENTS = {
 def render_factor_analysis(
     sales_df: pd.DataFrame | None,
     contractors_df: pd.DataFrame | None,
+    category_order_df: pd.DataFrame | None = None,
 ) -> None:
     """Рисует блок «Факторный анализ» одной сводной таблицей."""
     st.markdown("**Факторный анализ**")
@@ -41,7 +40,8 @@ def render_factor_analysis(
     if prepared_df is None:
         return
 
-    table = _build_factor_table(prepared_df)
+    order = load_category_order_list(category_order_df, COL_SPEC_RNP)
+    table = _build_factor_table(prepared_df, order)
     st.dataframe(
         table,
         use_container_width=True,
@@ -53,15 +53,16 @@ def render_factor_analysis(
     )
 
 
-def _build_factor_table(df: pd.DataFrame) -> pd.DataFrame:
+def _build_factor_table(df: pd.DataFrame, category_order: list[str]) -> pd.DataFrame:
     segment_rows = _build_segment_rows(df)
-    quantity_rows = _build_category_rows(df, value_column="Количество")
-    revenue_rows = _build_category_rows(df, value_column="Продажи с НДС")
+    quantity_rows = _build_category_rows(
+        df, value_column="Количество", category_order=category_order
+    )
+    revenue_rows = _build_category_rows(
+        df, value_column="Продажи с НДС", category_order=category_order
+    )
 
     rows: list[dict[str, str]] = []
-    # Выручка по сегментам с интервалами между строками:
-    # Ртрейд -> пустая -> A -> пустая -> B -> пустая -> C
-    # затем три пустые строки и блок категорий.
     for idx, row in enumerate(segment_rows):
         rows.append(row)
         if idx < len(segment_rows) - 1:
@@ -89,24 +90,20 @@ def _build_segment_rows(df: pd.DataFrame) -> list[dict[str, str]]:
     ]
 
 
-def _build_category_rows(df: pd.DataFrame, value_column: str) -> list[dict[str, str]]:
-    if df.empty:
-        by_category = pd.Series(dtype=float)
-        by_slice1 = pd.Series(dtype=float)
-        by_slice2 = pd.Series(dtype=float)
-    else:
-        by_category = df.groupby("Категория агрег.")[value_column].sum()
-        by_slice1 = df.groupby("Разрез 1")[value_column].sum()
-        by_slice2 = df.groupby("Разрез 2")[value_column].sum()
-
+def _build_category_rows(
+    df: pd.DataFrame,
+    value_column: str,
+    category_order: list[str],
+) -> list[dict[str, str]]:
+    specs = parse_category_order(category_order)
     rows: list[dict[str, str]] = []
-    for label, key in CATEGORY_ROWS:
-        value = _resolve_category_value(key, by_category, by_slice1, by_slice2)
+    for spec in specs:
+        value = resolve_spec_value(df, spec, value_column=value_column)
         if value_column == "Количество":
             value_formatted = _format_quantity(value)
         else:
             value_formatted = _format_money(value)
-        rows.append({"Показатель": label, "Значение": value_formatted})
+        rows.append({"Показатель": spec.label, "Значение": value_formatted})
     return rows
 
 
@@ -133,12 +130,13 @@ def _prepare_factor_base(sales_df: pd.DataFrame) -> pd.DataFrame | None:
     df["Продажи с НДС"] = pd.to_numeric(df["Продажи с НДС"], errors="coerce").fillna(0.0)
     df["Количество"] = pd.to_numeric(df["Количество"], errors="coerce").fillna(0.0)
 
-    if "Категория агрег." not in df.columns or "Разрез 1" not in df.columns or "Разрез 2" not in df.columns:
+    if "Категория агрег." not in df.columns or "Разрез" not in df.columns:
         categories_df = st.session_state.get("categories_df")
         if categories_df is None:
             st.warning("Справочник категорий не загружен.")
             return None
-        df = _merge_categories(df, categories_df)
+        category_order_df = st.session_state.get("category_order_df")
+        df = _merge_categories(df, categories_df, category_order_df)
 
     if "Товар ур.3" in df.columns:
         df["Товар ур.3_lower"] = df["Товар ур.3"].astype(str).str.lower().str.strip()
@@ -153,42 +151,32 @@ def _prepare_factor_base(sales_df: pd.DataFrame) -> pd.DataFrame | None:
     return df
 
 
-def _merge_categories(sales_df: pd.DataFrame, categories_df: pd.DataFrame) -> pd.DataFrame:
-    sales_prep = sales_df.copy()
-    for col in ("Товар ур.1", "Товар ур.2", "Товар ур.3"):
-        if col not in sales_prep.columns:
-            sales_prep[col] = "__NONE__"
-        sales_prep[col] = sales_prep[col].fillna("__NONE__").astype(str).str.strip()
-
-    categories_norm = categories_df.copy()
-    for col in ("Товар ур.1", "Товар ур.2", "Товар ур.3"):
-        if col not in categories_norm.columns:
-            categories_norm[col] = "__NONE__"
-        categories_norm[col] = categories_norm[col].fillna("__NONE__").astype(str).str.strip()
-
-    merge_cols = ["Товар ур.1", "Товар ур.2", "Товар ур.3", "Категория:"]
-    if "Разрез 1" in categories_norm.columns:
-        merge_cols.append("Разрез 1")
-    if "Разрез 2" in categories_norm.columns:
-        merge_cols.append("Разрез 2")
+def _merge_categories(
+    sales_df: pd.DataFrame,
+    categories_df: pd.DataFrame,
+    category_order_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    sales_prep = _normalise_product_columns(sales_df.copy())
+    known_categories = collect_known_category_names(
+        categories_df, category_order_df
+    )
+    categories_map = _build_categories_map(categories_df)
+    categories_map["Категория агрег."] = categories_map["Категория raw"].apply(
+        lambda name: _normalise_category_name(name, known_categories)
+    )
 
     merged = sales_prep.merge(
-        categories_norm[merge_cols].drop_duplicates(),
-        on=["Товар ур.1", "Товар ур.2", "Товар ур.3"],
+        categories_map[PRODUCT_COLUMNS + ["Категория агрег.", "Разрез"]].drop_duplicates(),
+        on=PRODUCT_COLUMNS,
         how="left",
     )
-
-    if "Разрез 1" not in merged.columns:
-        merged["Разрез 1"] = ""
-    if "Разрез 2" not in merged.columns:
-        merged["Разрез 2"] = ""
-
-    merged["Категория:"] = merged["Категория:"].fillna("Прочие товары, шт.:").apply(
-        lambda x: x if isinstance(x, str) and x.endswith(".") else f"{x}."
+    merged["Категория агрег."] = (
+        merged["Категория агрег."]
+        .fillna("Прочие товары, шт.:")
+        .apply(lambda name: _normalise_category_name(name, known_categories))
     )
-    merged["Разрез 1"] = merged["Разрез 1"].fillna("")
-    merged["Разрез 2"] = merged["Разрез 2"].fillna("")
-    return merged.rename(columns={"Категория:": "Категория агрег."})
+    merged["Разрез"] = merged["Разрез"].fillna("").astype(str).str.strip()
+    return merged
 
 def _sum_by_segment(df: pd.DataFrame, codes: Iterable[str]) -> float:
     if df.empty:

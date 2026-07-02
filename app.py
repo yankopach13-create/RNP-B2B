@@ -14,12 +14,16 @@ if str(SRC_DIR) not in sys.path:
 # --- собственные модули ----------------------------------------------------------------------------
 from data.references import (  # noqa: E402
     REF_CATEGORIES,
+    REF_CATEGORY_ORDER,
     REF_CONTRACTORS,
     clear_session_references,
     get_reference_label,
+    load_reference,
     preload_references,
+    reference_exists,
     sheets_configured,
 )
+from features.category_order import categories_reference_valid  # noqa: E402
 from features.dashboard import (  # noqa: E402
     CLIENT_BLOCK_WEEK_INPUT_KEY,
     render_special_retail_dashboard,
@@ -337,6 +341,9 @@ def main() -> None:
         refs = preload_references()
         contractors_df = refs[REF_CONTRACTORS]
         categories_df = refs[REF_CATEGORIES]
+        category_order_df = pd.DataFrame()
+        if reference_exists(REF_CATEGORY_ORDER):
+            category_order_df = load_reference(REF_CATEGORY_ORDER)
     except Exception as exc:  # noqa: BLE001
         source = "Google Sheets" if sheets_configured() else "локальных файлов"
         st.error(f"Не удалось загрузить справочники из {source}: {exc}")
@@ -372,7 +379,7 @@ def main() -> None:
         )
         return
 
-    if categories_df.empty or "Категория:" not in categories_df.columns:
+    if not categories_reference_valid(categories_df):
         st.error(
             f"⚠️ Справочник категорий пуст или некорректен: {get_reference_label(REF_CATEGORIES)}"
         )
@@ -382,12 +389,14 @@ def main() -> None:
     st.session_state.contractors_df = contractors_df
     if categories_df is not None:
         st.session_state.categories_df = categories_df
+    st.session_state.category_order_df = category_order_df
 
     st.markdown("---")
     render_special_retail_dashboard(
         sales_df=sales_df,
         contractors_df=contractors_df,
         categories_df=categories_df,
+        category_order_df=category_order_df,
         orders_df=orders_df,
         turnover_90_df=turnover_90_df,
         turnover_7_df=turnover_7_df,

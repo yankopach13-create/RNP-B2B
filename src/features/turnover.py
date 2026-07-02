@@ -3,13 +3,16 @@ import numpy as np
 import pandas as pd
 from typing import List
 
-from config.constants import (
-    TURNOVER_CATEGORY_ORDER,
-    MISC_SUM_COMPONENTS,
-    BRAND_COMPONENTS,
+from features.category_order import (
+    COL_TURNOVER,
+    CategoryRowSpec,
+    collect_known_category_names,
+    load_category_order_list,
+    parse_category_order,
 )
 from features.data_prep import (
     PRODUCT_COLUMNS,
+    _build_categories_map,
     _normalise_product_columns,
     _normalise_category_name,
 )
@@ -20,6 +23,7 @@ def calculate_turnover_by_category(
     categories_df: pd.DataFrame,
     clients_filter: List[str] | None = None,
     period_days: int = 90,
+    category_order_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame | None:
     if turnover_df is None or turnover_df.empty:
         return None
@@ -46,21 +50,23 @@ def calculate_turnover_by_category(
 
     df = _normalise_product_columns(df)
 
-    categories_map = (
-        categories_df[product_cols_present + ["Категория:", "Разрез 1", "Разрез 2"]]
-        .drop_duplicates(subset=product_cols_present)
-        .rename(columns={"Категория:": "Категория агрег."})
+    known_categories = collect_known_category_names(
+        categories_df, category_order_df
     )
-    categories_map = _normalise_product_columns(categories_map)
+    categories_map = _build_categories_map(categories_df)
+    categories_map["Категория агрег."] = categories_map["Категория raw"].apply(
+        lambda name: _normalise_category_name(name, known_categories)
+    )
 
     df = df.merge(
-        categories_map[product_cols_present + ["Категория агрег.", "Разрез 1", "Разрез 2"]],
+        categories_map[product_cols_present + ["Категория агрег.", "Разрез"]],
         how="left",
         on=product_cols_present,
     )
-    df["Категория агрег."] = df["Категория агрег."].apply(_normalise_category_name)
-    df["Разрез 1"] = df["Разрез 1"].fillna("")
-    df["Разрез 2"] = df["Разрез 2"].fillna("")
+    df["Категория агрег."] = df["Категория агрег."].apply(
+        lambda name: _normalise_category_name(name, known_categories)
+    )
+    df["Разрез"] = df["Разрез"].fillna("").astype(str).str.strip()
 
     if (
         "Остаток сред.дн. (Q)" not in df.columns
@@ -88,54 +94,37 @@ def calculate_turnover_by_category(
         errors="coerce",
     ).fillna(0.0)
 
-    cat_group = df.groupby("Категория агрег.")[["Остаток сред.дн. (Q)", "Продажи (Q)"]].sum()
-    slice1_group = df.groupby("Разрез 1")[["Остаток сред.дн. (Q)", "Продажи (Q)"]].sum()
+    order = load_category_order_list(category_order_df, COL_TURNOVER)
+    specs = parse_category_order(order)
 
     rows = []
-    for category in TURNOVER_CATEGORY_ORDER:
-        if category == "Прочие товары, шт.":
-            stock = sum(
-                slice1_group.loc[item, "Остаток сред.дн. (Q)"] if item in slice1_group.index else 0.0
-                for item in MISC_SUM_COMPONENTS
-            )
-            sales = sum(
-                slice1_group.loc[item, "Продажи (Q)"] if item in slice1_group.index else 0.0
-                for item in MISC_SUM_COMPONENTS
-            )
-        elif category == "БКС, шт.":
-            stock = (
-                slice1_group.loc["в т.ч. БКС, шт.", "Остаток сред.дн. (Q)"]
-                if "в т.ч. БКС, шт." in slice1_group.index
-                else 0.0
-            )
-            sales = (
-                slice1_group.loc["в т.ч. БКС, шт.", "Продажи (Q)"]
-                if "в т.ч. БКС, шт." in slice1_group.index
-                else 0.0
-            )
-        elif category == "Никотиновые паучи, шт.":
-            stock = (
-                slice1_group.loc["в т.ч. Никотиновые паучи, шт.", "Остаток сред.дн. (Q)"]
-                if "в т.ч. Никотиновые паучи, шт." in slice1_group.index
-                else 0.0
-            )
-            sales = (
-                slice1_group.loc["в т.ч. Никотиновые паучи, шт.", "Продажи (Q)"]
-                if "в т.ч. Никотиновые паучи, шт." in slice1_group.index
-                else 0.0
-            )
-        else:
-            stock = (
-                cat_group.loc[category, "Остаток сред.дн. (Q)"] if category in cat_group.index else 0.0
-            )
-            sales = (
-                cat_group.loc[category, "Продажи (Q)"] if category in cat_group.index else 0.0
-            )
-
+    for spec in specs:
+        stock, sales = _sum_turnover_metrics(df, spec)
         turnover_value = _calc_turnover(stock, sales, period_days)
-        rows.append({"Категория": category, "Оборачиваемость": turnover_value})
+        rows.append({"Категория": spec.label, "Оборачиваемость": turnover_value})
 
     return pd.DataFrame(rows)
+
+
+def _sum_turnover_metrics(
+    df: pd.DataFrame, spec: CategoryRowSpec
+) -> tuple[float, float]:
+    if df.empty:
+        return 0.0, 0.0
+
+    stock_series = pd.to_numeric(df["Остаток сред.дн. (Q)"], errors="coerce").fillna(0.0)
+    sales_series = pd.to_numeric(df["Продажи (Q)"], errors="coerce").fillna(0.0)
+    categories = df["Категория агрег."].fillna("").astype(str).str.strip()
+    razrez = df["Разрез"].fillna("").astype(str).str.strip()
+
+    if spec.is_slice:
+        if not spec.razrez or not spec.parent_category:
+            return 0.0, 0.0
+        mask = categories.eq(spec.parent_category) & razrez.eq(spec.razrez)
+    else:
+        mask = categories.eq(spec.parent_category)
+
+    return float(stock_series.loc[mask].sum()), float(sales_series.loc[mask].sum())
 
 
 def _calc_turnover(avg_stock: float, total_sales: float, period_days: int) -> float | None:

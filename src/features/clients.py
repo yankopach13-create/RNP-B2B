@@ -50,8 +50,14 @@ def render_clients_dynamics(
         .str.strip()
         .str.lower()
     )
-    base["Разрез 1"] = (
-        base.get("Разрез 1", pd.Series(index=base.index, dtype="string"))
+    base["Разрез"] = (
+        base.get("Разрез", base.get("Разрез 1", pd.Series(index=base.index, dtype="string")))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    base["Категория агрег."] = (
+        base.get("Категория агрег.", pd.Series(index=base.index, dtype="string"))
         .fillna("")
         .astype(str)
         .str.strip()
@@ -104,11 +110,12 @@ def render_clients_dynamics(
             "Количество",
         ].sum(),
         "Никотиновые паучи, шт.": merged_df.loc[
-            merged_df.get("Разрез 1", "").eq("в т.ч. Никотиновые паучи, шт."),
+            merged_df["Категория агрег."].str.contains("Никотиновые паучи", case=False, na=False),
             "Количество",
         ].sum(),
         "БКС, шт.": merged_df.loc[
-            merged_df.get("Разрез 1", "").eq("в т.ч. БКС, шт."),
+            merged_df["Разрез"].str.contains("БКС", case=False, na=False)
+            | merged_df["Категория агрег."].str.contains("БКС", case=False, na=False),
             "Количество",
         ].sum(),
     }
@@ -214,10 +221,13 @@ def _compute_metrics_for_key(
         subset["Товар ур.3"].eq("dragbar 6000"), "Количество"
     ].sum()
     pouch = subset.loc[
-        subset["Разрез 1"].eq("в т.ч. Никотиновые паучи, шт."), "Количество"
+        subset["Категория агрег."].str.contains("Никотиновые паучи", case=False, na=False),
+        "Количество",
     ].sum()
     bks = subset.loc[
-        subset["Разрез 1"].eq("в т.ч. БКС, шт."), "Количество"
+        subset["Разрез"].str.contains("БКС", case=False, na=False)
+        | subset["Категория агрег."].str.contains("БКС", case=False, na=False),
+        "Количество",
     ].sum()
     metrics = pd.Series(
         {"sales": float(sales), "dragbar_qty": float(dragbar),
@@ -237,12 +247,17 @@ def _aggregate_metrics(df: pd.DataFrame, key_col: str) -> pd.DataFrame:
         .sum()
     )
     result["pouch_qty"] = (
-        df.loc[df["Разрез 1"].eq("в т.ч. Никотиновые паучи, шт.")]
+        df.loc[
+            df["Категория агрег."].str.contains("Никотиновые паучи", case=False, na=False)
+        ]
         .groupby(key_col)["Количество"]
         .sum()
     )
     result["bks_qty"] = (
-        df.loc[df["Разрез 1"].eq("в т.ч. БКС, шт.")]
+        df.loc[
+            df["Разрез"].str.contains("БКС", case=False, na=False)
+            | df["Категория агрег."].str.contains("БКС", case=False, na=False)
+        ]
         .groupby(key_col)["Количество"]
         .sum()
     )

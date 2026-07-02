@@ -11,6 +11,10 @@ from data.references import (
     patch_reference_cells,
     reference_exists,
 )
+from features.category_order import (
+    get_category_source_column,
+    get_razrez_source_column,
+)
 
 
 def _prepare_contractors_df(df: pd.DataFrame) -> tuple[pd.DataFrame | None, str | None]:
@@ -22,13 +26,17 @@ def _prepare_contractors_df(df: pd.DataFrame) -> tuple[pd.DataFrame | None, str 
 
 
 def _prepare_categories_df(df: pd.DataFrame) -> tuple[pd.DataFrame | None, str | None]:
-    required = ["Товар ур.1", "Товар ур.2", "Товар ур.3", "Категория:"]
+    cat_col = get_category_source_column(df)
+    if cat_col is None:
+        return None, "В справочнике категорий нет столбца «Категория»."
+    required = ["Товар ур.1", "Товар ур.2", "Товар ур.3"]
     missing = [col for col in required if col not in df.columns]
     if missing:
         return None, f"В справочнике категорий нет столбцов: {', '.join(missing)}."
-    for col in ("Разрез 1", "Разрез 2"):
-        if col not in df.columns:
-            df[col] = ""
+    razrez_col = get_razrez_source_column(df)
+    if razrez_col is None:
+        df = df.copy()
+        df["Разрез"] = ""
     return df, None
 
 
@@ -130,7 +138,7 @@ def batch_add_clients_to_reference(
 
 
 def batch_add_products_to_reference(
-    items: list[tuple[tuple[str, str, str], str, str, str]],
+    items: list[tuple[tuple[str, str, str], str, str]],
 ) -> list[tuple[bool, str]]:
     """Пакетное добавление товаров — одно чтение и одна запись."""
     label = get_reference_label(REF_CATEGORIES)
@@ -151,6 +159,9 @@ def batch_add_products_to_reference(
     if error or df is None:
         return [(False, error or "Ошибка справочника категорий.") for _ in items]
 
+    cat_col = get_category_source_column(df)
+    razrez_col = get_razrez_source_column(df) or "Разрез"
+
     results: list[tuple[bool, str]] = []
     rows_to_append: list[dict[str, object]] = []
     existing_keys = set(
@@ -163,15 +174,14 @@ def batch_add_products_to_reference(
         ).tolist()
     )
 
-    for product_levels, category, slice1, slice2 in items:
+    for product_levels, category, razrez in items:
         p1, p2, p3 = (
             str(product_levels[0]).strip(),
             str(product_levels[1]).strip(),
             str(product_levels[2]).strip(),
         )
         category_value = str(category).strip()
-        slice1_value = str(slice1).strip()
-        slice2_value = str(slice2).strip()
+        razrez_value = str(razrez).strip()
 
         if not category_value:
             results.append(
@@ -190,9 +200,8 @@ def batch_add_products_to_reference(
         new_row["Товар ур.1"] = p1
         new_row["Товар ур.2"] = p2
         new_row["Товар ур.3"] = p3
-        new_row["Категория:"] = category_value
-        new_row["Разрез 1"] = slice1_value
-        new_row["Разрез 2"] = slice2_value
+        new_row[cat_col] = category_value
+        new_row[razrez_col] = razrez_value
         rows_to_append.append(new_row)
         existing_keys.add(new_key)
         results.append((True, f"Добавлен товар «{p1} / {p2} / {p3}»."))
@@ -218,10 +227,9 @@ def add_client_to_reference(client_name: str, subdivision: str) -> tuple[bool, s
 def add_product_to_reference(
     product_levels: tuple[str, str, str],
     category: str,
-    slice1: str,
-    slice2: str,
+    razrez: str,
 ) -> tuple[bool, str]:
     results = batch_add_products_to_reference(
-        [(product_levels, category, slice1, slice2)]
+        [(product_levels, category, razrez)]
     )
     return results[0] if results else (False, "Нет данных для добавления.")

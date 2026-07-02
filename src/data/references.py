@@ -15,6 +15,7 @@ REF_DIR = PROJECT_ROOT / "data" / "reference"
 
 REF_CONTRACTORS = "contractors"
 REF_CATEGORIES = "categories"
+REF_CATEGORY_ORDER = "category_order"
 REF_DZ_SPEC = "dz_spec"
 REF_DZ_TRAD = "dz_trad"
 REF_DZ_REMOVE = "dz_remove"
@@ -38,6 +39,11 @@ _REFERENCE_META: dict[str, dict[str, str]] = {
         "sheet": "categories",
         "local": "categories.xlsx",
         "title": "Категории товаров",
+    },
+    REF_CATEGORY_ORDER: {
+        "sheet": "category_order",
+        "local": "category_order.xlsx",
+        "title": "Порядок категорий",
     },
     REF_DZ_SPEC: {
         "sheet": "dz_spec",

@@ -6,15 +6,18 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-CATEGORY_CONFIG = [
-    {"label": "ОЭС 2 мл, шт.", "kind": "category", "value": "ОЭС 2 мл, шт."},
-    {"label": "ОЭС 10 мл, шт.", "kind": "category", "value": "ОЭС 10 мл, шт."},
-    {"label": "Картриджи с жидкостью, шт.", "kind": "category", "value": "Картриджи с жидкостью, шт."},
-    {"label": "Никотиновые паучи, шт.", "kind": "product1", "value": "3.5 Никотиновые паучи"},
-]
+from features.category_order import (
+    COL_TRADITION_RNP,
+    load_category_order_list,
+    parse_category_order,
+    resolve_spec_value,
+)
 
 
-def render_tradition_block(merged_df: pd.DataFrame | None) -> None:
+def render_tradition_block(
+    merged_df: pd.DataFrame | None,
+    category_order_df: pd.DataFrame | None = None,
+) -> None:
     """Отрисовывает блок «Традиция»: продажи, маржу и продажи по категориям в штуках."""
     st.subheader("Традиция")
 
@@ -53,15 +56,13 @@ def render_tradition_block(merged_df: pd.DataFrame | None) -> None:
     col_sales.metric("Продажи с НДС", _format_money(total_sales))
     col_margin.metric("Маржа", _format_money(total_margin))
 
-    for col in ["Категория агрег.", "Разрез 1"]:
-        if col not in tradition_df.columns:
-            tradition_df[col] = ""
+    order = load_category_order_list(category_order_df, COL_TRADITION_RNP)
+    specs = parse_category_order(order)
 
     rows: list[dict[str, object]] = []
-    for cfg in CATEGORY_CONFIG:
-        subset = _slice_by_config(tradition_df, cfg)
-        qty = int(round(subset["Количество"].sum())) if not subset.empty else 0
-        rows.append({"Категория": cfg["label"], "Продажи, шт.": qty if qty else 0})
+    for spec in specs:
+        qty = int(round(resolve_spec_value(tradition_df, spec)))
+        rows.append({"Категория": spec.label, "Продажи, шт.": qty if qty else 0})
 
     table = pd.DataFrame(rows)
     table["Продажи, шт."] = table["Продажи, шт."].apply(
@@ -78,16 +79,6 @@ def render_tradition_block(merged_df: pd.DataFrame | None) -> None:
         },
     )
     st.markdown("</div>", unsafe_allow_html=True)
-
-
-def _slice_by_config(df: pd.DataFrame, cfg: dict[str, str]) -> pd.DataFrame:
-    if cfg["kind"] == "category":
-        return df[df["Категория агрег."].astype(str) == cfg["value"]]
-    if cfg["kind"] == "slice1":
-        return df[df["Разрез 1"].astype(str) == cfg["value"]]
-    if cfg["kind"] == "product1":
-        return df[df["Товар ур.1"].astype(str) == cfg["value"]]
-    return df.head(0)
 
 
 def _format_money(value: float | int | None) -> str:

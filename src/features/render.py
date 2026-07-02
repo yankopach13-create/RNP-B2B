@@ -7,12 +7,14 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from config.constants import (
-    BRAND_COMPONENTS,
-    CATEGORY_DISPLAY_ORDER,
-    MISC_SUM_COMPONENTS,
-    SUBDIVISION_ORDER,
-    TURNOVER_CATEGORY_ORDER,
+from config.constants import SUBDIVISION_ORDER
+from features.category_order import (
+    COL_SPEC_RNP,
+    COL_TURNOVER,
+    CategoryRowSpec,
+    load_category_order_list,
+    parse_category_order,
+    resolve_spec_value,
 )
 from features.turnover import (
     calculate_turnover_by_category,
@@ -32,6 +34,7 @@ def render_section(
     color: str | None = None,
     use_expander: bool = False,
     category_order: list[str] | None = None,
+    category_order_df: pd.DataFrame | None = None,
     include_overall: bool = True,
     show_turnover: bool = True,
     aggregates: dict[str, list[str]] | None = None,
@@ -40,6 +43,10 @@ def render_section(
     overall_margin_adjustment: float = 0.0,
 ) -> None:
     aggregates = aggregates or {}
+    if category_order is None:
+        category_order = load_category_order_list(
+            category_order_df, COL_SPEC_RNP
+        )
 
     box_style = "" if color is None else f"background-color:{color};"
     if use_expander:
@@ -217,6 +224,7 @@ def render_turnover_block(
     turnover_90_df: pd.DataFrame | None = None,
     turnover_7_df: pd.DataFrame | None = None,
     visible_rows: int = 3,
+    category_order_df: pd.DataFrame | None = None,
 ) -> None:
     clients_filter = (
         dataframe["Клиент"].dropna().astype(str).unique().tolist()
@@ -228,17 +236,25 @@ def render_turnover_block(
         categories_df=categories_df,
         clients_filter=clients_filter,
         period_days=90,
+        category_order_df=category_order_df,
     )
     turnover_7_table = calculate_turnover_by_category(
         turnover_df=turnover_7_df,
         categories_df=categories_df,
         clients_filter=clients_filter,
         period_days=7,
+        category_order_df=category_order_df,
     )
+
+    turnover_order = load_category_order_list(category_order_df, COL_TURNOVER)
 
     st.markdown("**Оборачиваемость запасов (дни)**")
     if has_turnover_data(turnover_90_table) or has_turnover_data(turnover_7_table):
-        turnover_table = build_turnover_table(turnover_90_table, turnover_7_table)
+        turnover_table = build_turnover_table(
+            turnover_90_table,
+            turnover_7_table,
+            category_order=turnover_order,
+        )
         st.dataframe(
             turnover_table,
             use_container_width=True,
@@ -422,13 +438,13 @@ def build_financial_metrics_vertical_table(
 def build_category_table(
     df: pd.DataFrame,
     category_order: list[str] | None = None,
+    row_specs: list[CategoryRowSpec] | None = None,
     subdivisions: list[str] | None = None,
     include_overall: bool = True,
     aggregates: dict[str, list[str]] | None = None,
 ) -> pd.DataFrame:
     aggregates = aggregates or {}
-    if category_order is None:
-        category_order = CATEGORY_DISPLAY_ORDER
+    specs = row_specs or parse_category_order(category_order or [])
     if subdivisions is None:
         subdivisions = []
 
@@ -437,25 +453,17 @@ def build_category_table(
         for subdivision in subdivisions
     }
 
-    overall_series = _prepare_category_series(df)
-    subset_series = {
-        subdivision: _prepare_category_series(sub_df)
-        for subdivision, sub_df in subset_cache.items()
-    }
-
     rows: list[dict[str, object]] = []
-    for category in category_order:
-        row = {"Категория": category}
+    for spec in specs:
+        row = {"Категория": spec.label}
 
         if include_overall:
-            overall_value = _resolve_category_value(category, *overall_series)
+            overall_value = resolve_spec_value(df, spec)
             row["Общие"] = _format_quantity(overall_value)
 
         for subdivision in subdivisions:
-            cat_series, slice1_series, slice2_series = subset_series[subdivision]
-            value = _resolve_category_value(
-                category, cat_series, slice1_series, slice2_series
-            )
+            sub_df = subset_cache[subdivision]
+            value = resolve_spec_value(sub_df, spec)
             row[subdivision] = _format_quantity(value)
 
         rows.append(row)
@@ -466,14 +474,14 @@ def build_category_table(
 def build_category_vertical_table(
     df: pd.DataFrame,
     category_order: list[str] | None = None,
+    row_specs: list[CategoryRowSpec] | None = None,
     subdivisions: list[str] | None = None,
     include_overall: bool = True,
     aggregates: dict[str, list[str]] | None = None,
     spacer_between_groups: bool = False,
 ) -> pd.DataFrame:
     aggregates = aggregates or {}
-    if category_order is None:
-        category_order = CATEGORY_DISPLAY_ORDER
+    specs = row_specs or parse_category_order(category_order or [])
     if subdivisions is None:
         subdivisions = []
 
@@ -490,15 +498,12 @@ def build_category_vertical_table(
 
     rows: list[dict[str, str]] = []
     for idx, (group_name, group_df) in enumerate(groups):
-        cat_series, slice1_series, slice2_series = _prepare_category_series(group_df)
-        for cat_idx, category in enumerate(category_order):
-            value = _resolve_category_value(
-                category, cat_series, slice1_series, slice2_series
-            )
+        for cat_idx, spec in enumerate(specs):
+            value = resolve_spec_value(group_df, spec)
             rows.append(
                 {
                     "Группа": group_name if cat_idx == 0 else "",
-                    "Категория": category,
+                    "Категория": spec.label,
                     "Значение": _format_quantity(value),
                 }
             )
@@ -512,6 +517,7 @@ def build_category_vertical_table(
 def build_turnover_table(
     turnover_90_table: pd.DataFrame | None,
     turnover_7_table: pd.DataFrame | None,
+    category_order: list[str] | None = None,
 ) -> pd.DataFrame:
     categories_set: set[str] = set()
     if has_turnover_data(turnover_90_table):
@@ -522,9 +528,8 @@ def build_turnover_table(
     if not categories_set:
         return pd.DataFrame(columns=["Категория", "90 дней", "7 дней"])
 
-    ordered_categories = [
-        cat for cat in TURNOVER_CATEGORY_ORDER if cat in categories_set
-    ]
+    ordered_from_sheet = category_order or []
+    ordered_categories = [cat for cat in ordered_from_sheet if cat in categories_set]
     remaining = sorted(categories_set - set(ordered_categories))
     categories = ordered_categories + remaining
 
@@ -618,41 +623,6 @@ def _get_subset_df(
         components = aggregates[subdivision]
         return df[df["Подразделение"].isin(components)]
     return df[df["Подразделение"] == subdivision]
-
-
-def _prepare_category_series(
-    df: pd.DataFrame,
-) -> tuple[pd.Series, pd.Series, pd.Series]:
-    if df.empty:
-        empty = pd.Series(dtype=float)
-        return empty, empty, empty
-
-    quantity_by_category = df.groupby("Категория агрег.")["Количество"].sum()
-    quantity_by_slice1 = df.groupby("Разрез 1")["Количество"].sum()
-    quantity_by_slice2 = df.groupby("Разрез 2")["Количество"].sum()
-
-    return quantity_by_category, quantity_by_slice1, quantity_by_slice2
-
-
-def _resolve_category_value(
-    category: str,
-    by_category: pd.Series,
-    by_slice1: pd.Series,
-    by_slice2: pd.Series,
-) -> float:
-    if category == "Прочие товары, шт.:":
-        return sum(by_slice1.get(item, 0.0) for item in MISC_SUM_COMPONENTS)
-
-    if category in MISC_SUM_COMPONENTS:
-        return float(by_slice1.get(category, 0.0))
-
-    if category == "Никотиновые паучи, шт.":
-        return float(by_slice1.get("в т.ч. Никотиновые паучи, шт.", 0.0))
-
-    if category in BRAND_COMPONENTS:
-        return float(by_slice2.get(category, 0.0))
-
-    return float(by_category.get(category, 0.0))
 
 
 def _format_money(value: float | int | None) -> str:
