@@ -7,6 +7,7 @@ import streamlit as st
 
 from features.category_order import (
     COL_SPEC_RNP,
+    category_labels_only,
     collect_known_category_names,
     load_category_order_list,
     parse_category_order,
@@ -95,7 +96,7 @@ def _build_category_rows(
     value_column: str,
     category_order: list[str],
 ) -> list[dict[str, str]]:
-    specs = parse_category_order(category_order)
+    specs = parse_category_order(category_labels_only(category_order))
     rows: list[dict[str, str]] = []
     for spec in specs:
         value = resolve_spec_value(df, spec, value_column=value_column)

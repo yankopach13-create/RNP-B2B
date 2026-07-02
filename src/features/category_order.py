@@ -135,6 +135,16 @@ def load_category_order_list(
     return values or list(fallback)
 
 
+def category_labels_only(order: list[str]) -> list[str]:
+    """Возвращает порядок только категорий, без строк-разрезов «в т.ч. …»."""
+    return [
+        label
+        for label in order
+        if str(label).strip()
+        and not str(label).strip().lower().startswith(SLICE_PREFIX)
+    ]
+
+
 def parse_category_order(order: list[str]) -> list[CategoryRowSpec]:
     """Разбирает порядок строк: категория или «в т.ч. <разрез>» под предыдущей категорией."""
     specs: list[CategoryRowSpec] = []
