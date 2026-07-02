@@ -248,6 +248,83 @@ def resolve_label_value(
     return resolve_spec_value(df, fallback, value_column=value_column)
 
 
+def find_category_label_by_fragment(order: list[str], fragment: str) -> str | None:
+    """Находит подпись категории в порядке по фрагменту названия."""
+    fragment_key = _label_key(fragment)
+    for label in category_labels_only(order):
+        if fragment_key in _label_key(label):
+            return label
+    return None
+
+
+def sum_parent_category(
+    df: pd.DataFrame,
+    parent_label: str,
+    value_column: str = "Количество",
+) -> float:
+    """Сумма по всей категории (включая все разрезы)."""
+    if df.empty or value_column not in df.columns:
+        return 0.0
+    values = pd.to_numeric(df[value_column], errors="coerce").fillna(0.0)
+    categories = _category_series(df).map(_label_key)
+    parent_key = _label_key(parent_label)
+    return float(values.loc[categories.eq(parent_key)].sum())
+
+
+def sum_razrez_in_parent(
+    df: pd.DataFrame,
+    parent_label: str,
+    razrez_fragment: str,
+    value_column: str = "Количество",
+) -> float:
+    """Сумма по разрезу (частичное совпадение имени) внутри категории."""
+    if df.empty or value_column not in df.columns:
+        return 0.0
+    values = pd.to_numeric(df[value_column], errors="coerce").fillna(0.0)
+    categories = _category_series(df).map(_label_key)
+    razrez = _razrez_series(df).map(_label_key)
+    parent_key = _label_key(parent_label)
+    fragment_key = _label_key(razrez_fragment)
+    mask = categories.eq(parent_key) & razrez.str.contains(fragment_key, regex=False, na=False)
+    return float(values.loc[mask].sum())
+
+
+def sum_hookah_products_in_parent(
+    df: pd.DataFrame,
+    parent_label: str,
+    value_column: str = "Количество",
+) -> float:
+    """Сумма кальянной продукции (Товар ур.1) внутри указанной категории."""
+    if df.empty or value_column not in df.columns or "Товар ур.1" not in df.columns:
+        return 0.0
+    values = pd.to_numeric(df[value_column], errors="coerce").fillna(0.0)
+    categories = _category_series(df).map(_label_key)
+    parent_key = _label_key(parent_label)
+    level1 = df["Товар ур.1"].fillna("").astype(str).str.strip().str.casefold()
+    mask = categories.eq(parent_key) & level1.eq("1.1 кальянная продукция")
+    return float(values.loc[mask].sum())
+
+
+def calc_ai_misc_breakdown(
+    df: pd.DataFrame,
+    category_order: list[str],
+    value_column: str = "Количество",
+) -> tuple[float, float, float, float]:
+    """Возвращает (картриджи, бкс, прочие итого, вся категория) для ИИ-отчёта."""
+    misc_label = find_category_label_by_fragment(category_order, "прочие товары")
+    if misc_label is None:
+        return 0.0, 0.0, 0.0, 0.0
+
+    misc_total = sum_parent_category(df, misc_label, value_column=value_column)
+    cartridges = sum_razrez_in_parent(
+        df, misc_label, "картридж", value_column=value_column
+    )
+    bks = sum_razrez_in_parent(df, misc_label, "бкс", value_column=value_column)
+    hookah = sum_hookah_products_in_parent(df, misc_label, value_column=value_column)
+    misc_net = misc_total - cartridges - hookah - bks
+    return cartridges, bks, misc_net, misc_total
+
+
 def extract_category_row_values(
     df: pd.DataFrame,
     order: list[str],

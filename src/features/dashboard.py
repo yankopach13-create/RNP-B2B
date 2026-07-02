@@ -18,6 +18,7 @@ from features.category_order import (
     COL_SPEC_RNP,
     COL_TRADITION_RNP,
     COL_TURNOVER,
+    calc_ai_misc_breakdown,
     extract_category_row_values,
     get_category_source_column,
     get_razrez_source_column,
@@ -1756,6 +1757,10 @@ def _build_ai_report_table(
     dz_spec_total, _ = _calc_dz_total_by_reference(REF_DZ_SPEC, receivables_df)
     dz_trad_total, _ = _calc_dz_total_by_reference(REF_DZ_TRAD, receivables_df)
 
+    cartridges_qty, bks_qty, misc_net_qty, _ = calc_ai_misc_breakdown(
+        spec_df, spec_order, value_column="Количество"
+    )
+
     rows: list[dict[str, str]] = [
         {"Показатель": "Заказы", "Значение": ""},
         {
@@ -1791,15 +1796,15 @@ def _build_ai_report_table(
         },
         {
             "Показатель": "Картриджи с жидкостью B2B Спец.розница",
-            "Значение": _qty(spec_df, spec_order, "Картриджи с жидкостью, шт."),
+            "Значение": _format_quantity_compact(cartridges_qty),
         },
         {
             "Показатель": "Прочие товары B2B Спец.розница",
-            "Значение": _qty(spec_df, spec_order, "Прочие товары, шт.:"),
+            "Значение": _format_quantity_compact(misc_net_qty),
         },
         {
             "Показатель": "в т.ч.БКС B2B Спец.розница",
-            "Значение": _qty(spec_df, spec_order, "в т.ч. БКС, шт."),
+            "Значение": _format_quantity_compact(bks_qty),
         },
         {
             "Показатель": "в т.ч. Никотиновые паучи B2B Спец.розница",
