@@ -10,6 +10,7 @@ from features.category_order import (
     get_category_source_column,
     get_razrez_source_column,
     normalize_razrez_value,
+    _label_key,
 )
 
 PRODUCT_COLUMNS = ["Товар ур.1", "Товар ур.2", "Товар ур.3"]
@@ -214,6 +215,10 @@ def _normalise_category_name(
     if cleaned in CATEGORY_FIXES:
         return CATEGORY_FIXES[cleaned]
     if known_categories:
+        name_key = _label_key(cleaned)
+        for known in known_categories:
+            if _label_key(known) == name_key:
+                return known
         if cleaned in known_categories:
             return cleaned
         candidate = f"{cleaned}."

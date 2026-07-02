@@ -90,8 +90,11 @@ def normalize_razrez_value(value: object) -> str:
 
 
 def _label_key(value: object) -> str:
-    """Ключ для сравнения подписей категорий и разрезов без учёта регистра."""
-    return str(value or "").strip().casefold()
+    """Ключ для сравнения подписей категорий и разрезов без учёта регистра и «:»/«.» в конце."""
+    cleaned = str(value or "").strip().casefold()
+    while cleaned and cleaned[-1] in ":.":
+        cleaned = cleaned[:-1].rstrip()
+    return cleaned
 
 
 def match_spec_mask(df: pd.DataFrame, spec: CategoryRowSpec) -> pd.Series:
