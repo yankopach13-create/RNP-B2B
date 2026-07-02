@@ -469,6 +469,16 @@ def preload_references(
     return {key: cache[key].copy() for key in keys_to_load if key in cache}
 
 
+def load_category_order_reference() -> pd.DataFrame:
+    """Загружает лист category_order; при отсутствии — пустой DataFrame."""
+    if not reference_exists(REF_CATEGORY_ORDER):
+        return pd.DataFrame()
+    try:
+        return load_reference(REF_CATEGORY_ORDER)
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame()
+
+
 def load_reference(key: str, *, fresh: bool = False) -> pd.DataFrame:
     """Загружает справочник. fresh=True — из API; иначе session_state → кэш."""
     if key not in _REFERENCE_META:

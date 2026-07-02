@@ -6,24 +6,46 @@ import streamlit as st
 
 # --- подготовка путей -----------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent
-SRC_DIR = PROJECT_ROOT / "src"
-# src — в начало: иначе корневая папка data/reference/ перекрывает пакет src/data/
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+SRC_DIR = (PROJECT_ROOT / "src").resolve()
+
+
+def _ensure_src_on_path() -> None:
+    """Всегда ставит src первым в sys.path.
+
+    В репозитории есть data/reference/ в корне (xlsx), но Python-модули лежат в src/data/.
+    На Streamlit Cloud корень проекта часто уже есть в sys.path — без принудительного
+    prepend импорт ``data.references`` падает с ImportError.
+    """
+    if not SRC_DIR.is_dir():
+        raise RuntimeError(f"Не найдена папка src: {SRC_DIR}")
+
+    src_str = str(SRC_DIR)
+    while src_str in sys.path:
+        sys.path.remove(src_str)
+    sys.path.insert(0, src_str)
+
+
+_ensure_src_on_path()
 
 # --- собственные модули ----------------------------------------------------------------------------
-from data.references import (  # noqa: E402
-    REF_CATEGORIES,
-    REF_CATEGORY_ORDER,
-    REF_CONTRACTORS,
-    clear_session_references,
-    get_reference_label,
-    load_reference,
-    preload_references,
-    reference_exists,
-    sheets_configured,
-)
-from features.category_order import categories_reference_valid  # noqa: E402
+try:
+    from data.references import (  # noqa: E402
+        REF_CATEGORIES,
+        REF_CONTRACTORS,
+        clear_session_references,
+        get_reference_label,
+        load_category_order_reference,
+        preload_references,
+        sheets_configured,
+    )
+    from features.category_order import categories_reference_valid  # noqa: E402
+except ImportError as exc:
+    st.error(
+        "Не удалось загрузить модули приложения. "
+        f"Проверьте, что в репозитории есть папка src/data/. "
+        f"SRC_DIR={SRC_DIR}. Ошибка: {exc}"
+    )
+    st.stop()
 from features.dashboard import (  # noqa: E402
     CLIENT_BLOCK_WEEK_INPUT_KEY,
     render_special_retail_dashboard,
@@ -341,9 +363,7 @@ def main() -> None:
         refs = preload_references()
         contractors_df = refs[REF_CONTRACTORS]
         categories_df = refs[REF_CATEGORIES]
-        category_order_df = pd.DataFrame()
-        if reference_exists(REF_CATEGORY_ORDER):
-            category_order_df = load_reference(REF_CATEGORY_ORDER)
+        category_order_df = load_category_order_reference()
     except Exception as exc:  # noqa: BLE001
         source = "Google Sheets" if sheets_configured() else "локальных файлов"
         st.error(f"Не удалось загрузить справочники из {source}: {exc}")
