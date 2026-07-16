@@ -27,6 +27,13 @@ def _ensure_src_on_path() -> None:
 
 _ensure_src_on_path()
 
+# Перезагрузка модулей с отчётами при каждом rerun Streamlit (подхватывает правки без ручного рестарта).
+import importlib
+import features.ai_report as _ai_report_module
+import features.dashboard as _dashboard_module
+importlib.reload(_ai_report_module)
+importlib.reload(_dashboard_module)
+
 # --- собственные модули ----------------------------------------------------------------------------
 try:
     from data.references import (  # noqa: E402
