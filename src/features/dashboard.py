@@ -291,6 +291,7 @@ def render_special_retail_dashboard(
     turnover_7_df: pd.DataFrame | None = None,
     receivables_df: pd.DataFrame | None = None,
     cash_inflow_df: pd.DataFrame | None = None,
+    hardware_levels_df: pd.DataFrame | None = None,
 ) -> None:
     merged_df, new_clients, unmatched_products = prepare_dataset(
         sales_df=sales_df,
@@ -316,8 +317,6 @@ def render_special_retail_dashboard(
         st.session_state.show_general_rnp_block = False
     if "show_ai_rnp_block" not in st.session_state:
         st.session_state.show_ai_rnp_block = False
-    if "show_hardware_sales_dynamics_block" not in st.session_state:
-        st.session_state.show_hardware_sales_dynamics_block = False
 
     if spec_df.empty:
         st.info("Нет данных по Спец. рознице.")
@@ -396,28 +395,6 @@ def render_special_retail_dashboard(
         .st-key-toggle_ai_rnp_block_btn button:focus-visible {
             background-color: #955716 !important;
             border-color: #955716 !important;
-            color: #ffffff !important;
-            box-shadow: none !important;
-            outline: none !important;
-        }
-        .st-key-toggle_hardware_sales_dynamics_btn button {
-            background-color: #5c3d8f !important;
-            color: #ffffff !important;
-            border: 1px solid #5c3d8f !important;
-            font-weight: 800 !important;
-            font-size: 1.05rem !important;
-            border-radius: 10px !important;
-            min-height: 44px !important;
-            padding: 0.5rem 1rem !important;
-            justify-content: flex-start !important;
-            text-align: left !important;
-        }
-        .st-key-toggle_hardware_sales_dynamics_btn button:hover,
-        .st-key-toggle_hardware_sales_dynamics_btn button:active,
-        .st-key-toggle_hardware_sales_dynamics_btn button:focus,
-        .st-key-toggle_hardware_sales_dynamics_btn button:focus-visible {
-            background-color: #4a3173 !important;
-            border-color: #4a3173 !important;
             color: #ffffff !important;
             box-shadow: none !important;
             outline: none !important;
@@ -548,7 +525,7 @@ def render_special_retail_dashboard(
 
         st.markdown("---")
         _init_reference_additions_log()
-        col_client_block, col_reference_log = st.columns([1.05, 1], gap="medium")
+        col_client_block, col_hardware_dynamics = st.columns([1.05, 1], gap="medium")
         with col_client_block:
             _client_count = _count_clients(spec_df)
             _client_count_display = _format_quantity(float(_client_count)) or "0"
@@ -575,25 +552,8 @@ def render_special_retail_dashboard(
                     for col in client_block_df.columns
                 },
             )
-        with col_reference_log:
-            st.markdown("<strong>Добавлено в справочник</strong>", unsafe_allow_html=True)
-            _ref_log_df = _reference_additions_log_dataframe()
-            if _ref_log_df.empty:
-                st.caption(
-                    "Пока нет записей. После нажатия «Обновить справочники и пересчитать отчёт» "
-                    "в блоке быстрого добавления строки появятся здесь (только в этой сессии браузера)."
-                )
-            else:
-                _ref_log_height = _table_height_from_rows(max(4, min(len(_ref_log_df), 12)))
-                st.dataframe(
-                    _ref_log_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=_ref_log_height,
-                    column_config={
-                        col: st.column_config.TextColumn(col) for col in _ref_log_df.columns
-                    },
-                )
+        with col_hardware_dynamics:
+            _render_hardware_sales_dynamics_panel(hardware_levels_df)
 
         st.markdown("---")
         with st.container():
@@ -621,6 +581,26 @@ def render_special_retail_dashboard(
                         if col != "Показатель"
                     },
                 )
+
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        st.markdown("<strong>Добавлено в справочник</strong>", unsafe_allow_html=True)
+        _ref_log_df = _reference_additions_log_dataframe()
+        if _ref_log_df.empty:
+            st.caption(
+                "Пока нет записей. После нажатия «Обновить справочники и пересчитать отчёт» "
+                "в блоке быстрого добавления строки появятся здесь (только в этой сессии браузера)."
+            )
+        else:
+            _ref_log_height = _table_height_from_rows(max(4, min(len(_ref_log_df), 12)))
+            st.dataframe(
+                _ref_log_df,
+                use_container_width=True,
+                hide_index=True,
+                height=_ref_log_height,
+                column_config={
+                    col: st.column_config.TextColumn(col) for col in _ref_log_df.columns
+                },
+            )
 
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
     general_toggle_label = (
@@ -698,205 +678,146 @@ def render_special_retail_dashboard(
             },
         )
 
-    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-    hardware_dynamics_toggle_label = (
-        "▼ Динамика продаж железа B2B (нажмите, чтобы свернуть)"
-        if st.session_state.show_hardware_sales_dynamics_block
-        else "▶ Динамика продаж железа B2B (нажмите, чтобы развернуть)"
+
+def _render_hardware_sales_dynamics_panel(
+    hardware_levels_df: pd.DataFrame | None,
+) -> None:
+    """Таблица «Динамика продаж под-систем и расходников» справа от клиентского блока."""
+    _HARDWARE_LEVELS_HELP_CAPTION = (
+        "Зайдите к Qlik под профилем User2.<br>"
+        'В анализе продаж перейдите в закладку '
+        '"АВТОМАТИЗАЦИЯ B2B "Динамика продаж железа"".<br><br><br>'
+        "Отберите необходимую неделю и скачайте отчёт без форматирования "
+        "(не нажимайте галочку при скачивании).<br>"
+        'Файл загружается в колонке «Продажи» — контейнер '
+        '"Продажи железа (ур.3 / ур.4)".'
     )
-    col_hardware_dynamics_toggle, col_hardware_dynamics_spacer = st.columns(
-        [1.35, 1], gap="small"
+    st.markdown("<div style='margin-top:6px;'></div>", unsafe_allow_html=True)
+    render_block_title_with_help(
+        title="Динамика продаж под-систем и расходников",
+        popover_key="hardware-dynamics",
+        caption=_HARDWARE_LEVELS_HELP_CAPTION,
+        image_name="Dynamic.png",
+        align="left",
     )
-    with col_hardware_dynamics_toggle:
-        if st.button(
-            hardware_dynamics_toggle_label,
-            key="toggle_hardware_sales_dynamics_btn",
-            type="primary",
-            use_container_width=True,
+    try:
+        cartridge_ref_df = load_reference(REF_SALES_POD_CARTRIDGE)
+    except Exception as exc:  # noqa: BLE001
+        st.warning(
+            f"Справочник не найден: {get_reference_label(REF_SALES_POD_CARTRIDGE)}. "
+            "Добавьте лист Sales_pod_cartridge в Google Sheets или файл "
+            "Sales_pod_cartridge.xlsx в data/reference."
+        )
+        st.error(
+            f"Не удалось загрузить справочник "
+            f"{get_reference_label(REF_SALES_POD_CARTRIDGE)}: {exc}"
+        )
+        return
+
+    try:
+        hardware_result = build_hardware_sales_result(
+            reference_df=cartridge_ref_df,
+            levels_df=hardware_levels_df,
+        )
+    except ValueError as exc:
+        st.error(str(exc))
+        hardware_result = build_hardware_sales_result(
+            reference_df=cartridge_ref_df,
+            levels_df=None,
+        )
+
+    candidates = hardware_result.candidates_for_reference
+    if candidates and hardware_levels_df is not None:
+        with st.expander(
+            f"Новые товары для справочника ({len(candidates)})",
+            expanded=True,
         ):
-            st.session_state.show_hardware_sales_dynamics_block = (
-                not st.session_state.show_hardware_sales_dynamics_block
-            )
-            st.rerun()
-    with col_hardware_dynamics_spacer:
-        st.empty()
+            header_name_col, header_cat_col = st.columns([3.2, 1])
+            with header_name_col:
+                st.markdown("**Товар**")
+            with header_cat_col:
+                st.markdown("**Категория**")
 
-    if st.session_state.show_hardware_sales_dynamics_block:
-        _HARDWARE_LEVELS_HELP_CAPTION = (
-            "Зайдите к Qlik под профилем User2.<br>"
-            'В анализе продаж перейдите в закладку '
-            '"АВТОМАТИЗАЦИЯ B2B "Динамика продаж железа"".<br><br><br>'
-            "Отберите необходимую неделю и скачайте отчёт без форматирования "
-            "(не нажимайте галочку при скачивании).<br>"
-            'Вставьте скачанный документ в контейнер '
-            '"Продажи железа (ур.3 / ур.4)".'
-        )
-        render_block_title_with_help(
-            title="Динамика продаж под-систем и расходников",
-            popover_key="hardware-dynamics",
-            caption=_HARDWARE_LEVELS_HELP_CAPTION,
-            image_name="Dynamic.png",
-            align="left",
-        )
-        try:
-            cartridge_ref_df = load_reference(REF_SALES_POD_CARTRIDGE)
-        except Exception as exc:  # noqa: BLE001
-            st.warning(
-                f"Справочник не найден: {get_reference_label(REF_SALES_POD_CARTRIDGE)}. "
-                "Добавьте лист Sales_pod_cartridge в Google Sheets или файл "
-                "Sales_pod_cartridge.xlsx в data/reference."
-            )
-            st.error(
-                f"Не удалось загрузить справочник "
-                f"{get_reference_label(REF_SALES_POD_CARTRIDGE)}: {exc}"
-            )
-            cartridge_ref_df = None
-
-        if cartridge_ref_df is not None:
-                st.markdown(
-                    """
-                    <style>
-                    .st-key-hardware_levels_uploader [data-testid="stFileUploaderDropzone"] {
-                        padding: 0.35rem 0.55rem;
-                        min-height: 2.35rem;
-                    }
-                    .st-key-hardware_levels_uploader [data-testid="stFileUploaderDropzone"] div {
-                        font-size: 0.82rem;
-                    }
-                    </style>
-                    """,
-                    unsafe_allow_html=True,
+            products_to_add: list[ReferenceProduct] = []
+            for idx, item in enumerate(candidates):
+                name_col, cat_col = st.columns([3.2, 1])
+                default_category = product_level_to_category(item.level)
+                with name_col:
+                    st.markdown(item.name)
+                with cat_col:
+                    selected_category = st.selectbox(
+                        "Категория",
+                        HARDWARE_CATEGORY_OPTIONS,
+                        index=HARDWARE_CATEGORY_OPTIONS.index(default_category),
+                        key=f"hardware_candidate_category_{idx}",
+                        label_visibility="collapsed",
+                    )
+                products_to_add.append(
+                    ReferenceProduct(
+                        name=item.name,
+                        level=category_label_to_level(selected_category),
+                    )
                 )
-                upload_col, upload_spacer_col = st.columns([0.34, 0.66], gap="small")
-                with upload_col:
-                    hardware_levels_file = st.file_uploader(
-                        "Продажи железа (ур.3 / ур.4)",
-                        type=["xlsx", "xls"],
-                        key="hardware_levels_uploader",
-                    )
-                with upload_spacer_col:
-                    st.empty()
-                hardware_levels_df: pd.DataFrame | None = None
-                if hardware_levels_file is not None:
-                    try:
-                        hardware_levels_df = pd.read_excel(hardware_levels_file)
-                    except Exception as exc:  # noqa: BLE001
-                        st.error(f"Не получилось прочитать файл продаж железа: {exc}")
 
+            if st.button(
+                f"Добавить {len(candidates)} товар(ов) в справочник Google Sheets",
+                key="hardware_add_to_reference_btn",
+                type="primary",
+            ):
                 try:
-                    hardware_result = build_hardware_sales_result(
-                        reference_df=cartridge_ref_df,
-                        levels_df=hardware_levels_df,
+                    fresh_ref_df = load_reference(REF_SALES_POD_CARTRIDGE)
+                    start_len = len(fresh_ref_df)
+                    updated_ref, added_names = append_products_to_cartridge_reference(
+                        fresh_ref_df,
+                        products_to_add,
                     )
-                except ValueError as exc:
-                    st.error(str(exc))
-                    hardware_result = build_hardware_sales_result(
-                        reference_df=cartridge_ref_df,
-                        levels_df=None,
-                    )
-
-                candidates = hardware_result.candidates_for_reference
-                if candidates and hardware_levels_df is not None:
-                    with st.expander(
-                        f"Новые товары для справочника ({len(candidates)})",
-                        expanded=True,
-                    ):
-                        header_name_col, header_cat_col = st.columns([3.2, 1])
-                        with header_name_col:
-                            st.markdown("**Товар**")
-                        with header_cat_col:
-                            st.markdown("**Категория**")
-
-                        products_to_add: list[ReferenceProduct] = []
-                        for idx, item in enumerate(candidates):
-                            name_col, cat_col = st.columns([3.2, 1])
-                            default_category = product_level_to_category(item.level)
-                            with name_col:
-                                st.markdown(item.name)
-                            with cat_col:
-                                selected_category = st.selectbox(
-                                    "Категория",
-                                    HARDWARE_CATEGORY_OPTIONS,
-                                    index=HARDWARE_CATEGORY_OPTIONS.index(
-                                        default_category
-                                    ),
-                                    key=f"hardware_candidate_category_{idx}",
-                                    label_visibility="collapsed",
-                                )
-                            products_to_add.append(
-                                ReferenceProduct(
-                                    name=item.name,
-                                    level=category_label_to_level(selected_category),
-                                )
+                    if not added_names:
+                        st.info("Все найденные товары уже есть в справочнике.")
+                    else:
+                        new_rows = updated_ref.iloc[start_len:].to_dict("records")
+                        append_reference_rows(
+                            REF_SALES_POD_CARTRIDGE,
+                            new_rows,
+                        )
+                        for product in products_to_add:
+                            if product.name not in added_names:
+                                continue
+                            _append_reference_addition(
+                                entry_type="Товар железа B2B",
+                                element=product.name,
+                                reference=get_reference_title(REF_SALES_POD_CARTRIDGE),
+                                distribution=product_level_to_category(product.level),
                             )
-
-                        if st.button(
-                            f"Добавить {len(candidates)} товар(ов) в справочник Google Sheets",
-                            key="hardware_add_to_reference_btn",
-                            type="primary",
-                        ):
-                            try:
-                                fresh_ref_df = load_reference(
-                                    REF_SALES_POD_CARTRIDGE
-                                )
-                                start_len = len(fresh_ref_df)
-                                updated_ref, added_names = (
-                                    append_products_to_cartridge_reference(
-                                        fresh_ref_df,
-                                        products_to_add,
-                                    )
-                                )
-                                if not added_names:
-                                    st.info("Все найденные товары уже есть в справочнике.")
-                                else:
-                                    new_rows = updated_ref.iloc[start_len:].to_dict(
-                                        "records"
-                                    )
-                                    append_reference_rows(
-                                        REF_SALES_POD_CARTRIDGE,
-                                        new_rows,
-                                    )
-                                    for product in products_to_add:
-                                        if product.name not in added_names:
-                                            continue
-                                        _append_reference_addition(
-                                            entry_type="Товар железа B2B",
-                                            element=product.name,
-                                            reference=get_reference_title(
-                                                REF_SALES_POD_CARTRIDGE
-                                            ),
-                                            distribution=product_level_to_category(
-                                                product.level
-                                            ),
-                                        )
-                                    st.success(
-                                        "Добавлено в справочник: "
-                                        + ", ".join(added_names)
-                                    )
-                                    st.rerun()
-                            except Exception as exc:  # noqa: BLE001
-                                st.error(
-                                    f"Не удалось обновить справочник "
-                                    f"{get_reference_label(REF_SALES_POD_CARTRIDGE)}: {exc}"
-                                )
-
-                hardware_table = hardware_result.table
-                if hardware_table.empty:
-                    st.info("В справочнике нет товаров для отображения.")
-                else:
-                    hardware_table = hardware_table.copy()
-                    hardware_table["Продажи, шт."] = hardware_table["Продажи, шт."].map(
-                        lambda value: _format_quantity(float(value))
+                        st.success(
+                            "Добавлено в справочник: " + ", ".join(added_names)
+                        )
+                        st.rerun()
+                except Exception as exc:  # noqa: BLE001
+                    st.error(
+                        f"Не удалось обновить справочник "
+                        f"{get_reference_label(REF_SALES_POD_CARTRIDGE)}: {exc}"
                     )
-                    st.dataframe(
-                        hardware_table,
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            "Товар": st.column_config.TextColumn("Товар"),
-                            "Продажи, шт.": st.column_config.TextColumn("Продажи, шт."),
-                        },
-                    )
+
+    hardware_table = hardware_result.table
+    if hardware_table.empty:
+        st.info("В справочнике нет товаров для отображения.")
+        return
+
+    hardware_table = hardware_table.copy()
+    hardware_table["Продажи, шт."] = hardware_table["Продажи, шт."].map(
+        lambda value: _format_quantity(float(value))
+    )
+    _hardware_height = _table_height_from_rows(max(4, min(len(hardware_table), 12)))
+    st.dataframe(
+        hardware_table,
+        use_container_width=True,
+        hide_index=True,
+        height=_hardware_height,
+        column_config={
+            "Товар": st.column_config.TextColumn("Товар"),
+            "Продажи, шт.": st.column_config.TextColumn("Продажи, шт."),
+        },
+    )
 
 
 def _init_reference_additions_log() -> None:

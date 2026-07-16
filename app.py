@@ -52,6 +52,7 @@ from features.dashboard import (  # noqa: E402
 )
 from features.upload_help import (  # noqa: E402
     INSTRUCTIONS_DIR,
+    render_block_title_with_help,
     render_section_header_with_help,
 )
 
@@ -113,6 +114,30 @@ def main() -> None:
             "Продажи",
             type=["xlsx", "xls"],
             key="sales_uploader",
+        )
+        _HARDWARE_LEVELS_HELP_CAPTION = (
+            "Зайдите к Qlik под профилем User2.<br>"
+            'В анализе продаж перейдите в закладку '
+            '"АВТОМАТИЗАЦИЯ B2B "Динамика продаж железа"".<br><br><br>'
+            "Отберите необходимую неделю и скачайте отчёт без форматирования "
+            "(не нажимайте галочку при скачивании).<br>"
+            'Вставьте скачанный документ в контейнер '
+            '"Продажи железа (ур.3 / ур.4)".'
+        )
+        st.markdown("<div style='height:0.35rem;'></div>", unsafe_allow_html=True)
+        render_block_title_with_help(
+            title="Продажи железа (ур.3 / ур.4)",
+            popover_key="hardware-levels-upload",
+            caption=_HARDWARE_LEVELS_HELP_CAPTION,
+            image_name="Dynamic.png",
+            align="left",
+            title_color="inherit",
+        )
+        hardware_levels_file = st.file_uploader(
+            "Продажи железа (ур.3 / ур.4)",
+            type=["xlsx", "xls"],
+            key="hardware_levels_uploader",
+            label_visibility="collapsed",
         )
 
     # Столбец 3: Оборачиваемость
@@ -345,6 +370,13 @@ def main() -> None:
             box-shadow: none !important;
             outline: none !important;
         }
+        .st-key-hardware_levels_uploader [data-testid="stFileUploaderDropzone"] {
+            padding: 0.35rem 0.55rem;
+            min-height: 2.35rem;
+        }
+        .st-key-hardware_levels_uploader [data-testid="stFileUploaderDropzone"] div {
+            font-size: 0.82rem;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -369,6 +401,9 @@ def main() -> None:
         st.error(f"Не удалось загрузить справочники из {source}: {exc}")
         return
     sales_df = _read_excel(sales_file, "Продажи")
+    hardware_levels_df = _read_excel(
+        hardware_levels_file, "Продажи железа (ур.3 / ур.4)"
+    )
     orders_df = None
     turnover_90_df = _read_excel(turnover_90_file, "Оборачиваемость 90 дней")
     turnover_7_df = _read_excel(turnover_7_file, "Оборачиваемость 7 дней")
@@ -380,6 +415,7 @@ def main() -> None:
         df is None and uploaded_file is not None
         for df, uploaded_file in (
             (sales_df, sales_file),
+            (hardware_levels_df, hardware_levels_file),
             (turnover_90_df, turnover_90_file),
             (turnover_7_df, turnover_7_file),
             (receivables_df, receivables_file),
@@ -422,6 +458,7 @@ def main() -> None:
         turnover_7_df=turnover_7_df,
         receivables_df=receivables_df,
         cash_inflow_df=cash_inflow_df,
+        hardware_levels_df=hardware_levels_df,
     )
 
 
