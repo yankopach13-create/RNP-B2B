@@ -134,12 +134,10 @@ def main() -> None:
             type=["xlsx", "xls"],
             key="sales_uploader",
         )
-        st.subheader("Продажи железа (ур.3 / ур.4)")
         hardware_levels_file = st.file_uploader(
             "Продажи железа (ур.3 / ур.4)",
             type=["xlsx", "xls"],
             key="hardware_levels_uploader",
-            label_visibility="collapsed",
         )
 
     # Столбец 3: Оборачиваемость

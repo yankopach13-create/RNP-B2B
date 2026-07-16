@@ -78,8 +78,6 @@ from features.reference_update import (
     batch_add_clients_to_reference,
     batch_add_products_to_reference,
 )
-from features.upload_help import render_block_title_with_help
-
 # Акцент для суммы ДЗ и числа контрагентов в заголовках (рядом с жирным текстом)
 _HEADER_METRIC_VALUE_COLOR = "#1565c0"
 
@@ -553,7 +551,10 @@ def render_special_retail_dashboard(
                 },
             )
         with col_hardware_dynamics:
-            _render_hardware_sales_dynamics_panel(hardware_levels_df)
+            _render_hardware_sales_dynamics_panel(
+                hardware_levels_df,
+                table_height=_client_height,
+            )
 
         st.markdown("---")
         with st.container():
@@ -681,24 +682,16 @@ def render_special_retail_dashboard(
 
 def _render_hardware_sales_dynamics_panel(
     hardware_levels_df: pd.DataFrame | None,
+    table_height: int,
 ) -> None:
     """Таблица «Динамика продаж под-систем и расходников» справа от клиентского блока."""
-    _HARDWARE_LEVELS_HELP_CAPTION = (
-        "Зайдите к Qlik под профилем User2.<br>"
-        'В анализе продаж перейдите в закладку '
-        '"АВТОМАТИЗАЦИЯ B2B "Динамика продаж железа"".<br><br><br>'
-        "Отберите необходимую неделю и скачайте отчёт без форматирования "
-        "(не нажимайте галочку при скачивании).<br>"
-        'Файл загружается в колонке «Продажи» — контейнер '
-        '"Продажи железа (ур.3 / ур.4)".'
-    )
-    st.markdown("<div style='margin-top:6px;'></div>", unsafe_allow_html=True)
-    render_block_title_with_help(
-        title="Динамика продаж под-систем и расходников",
-        popover_key="hardware-dynamics",
-        caption=_HARDWARE_LEVELS_HELP_CAPTION,
-        image_name="Dynamic.png",
-        align="left",
+    st.markdown(
+        (
+            "<div style='margin-top:6px;'>"
+            "<strong>Динамика продаж под-систем и расходников</strong>"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
     )
     try:
         cartridge_ref_df = load_reference(REF_SALES_POD_CARTRIDGE)
@@ -807,12 +800,11 @@ def _render_hardware_sales_dynamics_panel(
     hardware_table["Продажи, шт."] = hardware_table["Продажи, шт."].map(
         lambda value: _format_quantity(float(value))
     )
-    _hardware_height = _table_height_from_rows(max(4, min(len(hardware_table), 12)))
     st.dataframe(
         hardware_table,
         use_container_width=True,
         hide_index=True,
-        height=_hardware_height,
+        height=table_height,
         column_config={
             "Товар": st.column_config.TextColumn("Товар"),
             "Продажи, шт.": st.column_config.TextColumn("Продажи, шт."),
