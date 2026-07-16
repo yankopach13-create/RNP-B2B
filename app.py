@@ -52,7 +52,7 @@ from features.dashboard import (  # noqa: E402
 )
 from features.upload_help import (  # noqa: E402
     INSTRUCTIONS_DIR,
-    render_block_title_with_help,
+    render_custom_help_popover,
     render_section_header_with_help,
 )
 
@@ -99,21 +99,11 @@ def main() -> None:
 
     # Столбец 2: Продажи
     with col_sales:
-        render_section_header_with_help(
-            title="Продажи",
-            image_name="sales.png",
-            caption=(
-                "Зайдите к Qlik под профилем User2.<br>"
-                'В анализе продаж перейдите в закладку "АВТОМАТИЗАЦИЯ РНП B2B (Спец.розница/Традиция)".<br><br><br>'
-                "Отберите необходимую неделю и скачайте отчёт без форматирования (не нажимайте галочку при скачивании).<br>"
-                'Вставьте скачанный документ в контейнер "Продажи".'
-            ),
-            align="left",
-        )
-        sales_file = st.file_uploader(
-            "Продажи",
-            type=["xlsx", "xls"],
-            key="sales_uploader",
+        _SALES_HELP_CAPTION = (
+            "Зайдите к Qlik под профилем User2.<br>"
+            'В анализе продаж перейдите в закладку "АВТОМАТИЗАЦИЯ РНП B2B (Спец.розница/Традиция)".<br><br><br>'
+            "Отберите необходимую неделю и скачайте отчёт без форматирования (не нажимайте галочку при скачивании).<br>"
+            'Вставьте скачанный документ в контейнер "Продажи".'
         )
         _HARDWARE_LEVELS_HELP_CAPTION = (
             "Зайдите к Qlik под профилем User2.<br>"
@@ -124,15 +114,27 @@ def main() -> None:
             'Вставьте скачанный документ в контейнер '
             '"Продажи железа (ур.3 / ур.4)".'
         )
-        st.markdown("<div style='height:0.35rem;'></div>", unsafe_allow_html=True)
-        render_block_title_with_help(
-            title="Продажи железа (ур.3 / ур.4)",
-            popover_key="hardware-levels-upload",
-            caption=_HARDWARE_LEVELS_HELP_CAPTION,
-            image_name="Dynamic.png",
-            align="left",
-            title_color="inherit",
+        title_col, help_col = st.columns([0.82, 0.18], gap="small")
+        with title_col:
+            st.subheader("Продажи")
+        with help_col:
+            st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+            render_custom_help_popover(
+                popover_key="sales-and-hardware",
+                caption=_SALES_HELP_CAPTION,
+                image_name="sales.png",
+                second_image_name="Dynamic.png",
+                second_caption=_HARDWARE_LEVELS_HELP_CAPTION,
+                align="left",
+                two_column_layout=True,
+                compact_images=True,
+            )
+        sales_file = st.file_uploader(
+            "Продажи",
+            type=["xlsx", "xls"],
+            key="sales_uploader",
         )
+        st.subheader("Продажи железа (ур.3 / ур.4)")
         hardware_levels_file = st.file_uploader(
             "Продажи железа (ур.3 / ур.4)",
             type=["xlsx", "xls"],
