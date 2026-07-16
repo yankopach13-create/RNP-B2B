@@ -537,7 +537,7 @@ def render_special_retail_dashboard(
         _week_for_table = get_client_block_week_number(_default_week_num)
         spec_for_client_block = _spec_df_for_client_block_table(spec_df, _week_for_table)
         client_block_df = _build_client_block_table(spec_for_client_block)
-        _client_height = _table_height_from_rows(len(client_block_df))
+        _client_height = _table_height_from_rows(4)
         st.dataframe(
             client_block_df,
             use_container_width=True,
