@@ -2271,26 +2271,6 @@ def _build_full_report_excel(
         receivables_df=receivables_df,
         category_order_df=category_order_df,
     )
-    target_client_sales_df = _prepare_target_client_sales_df(
-        sales_df=sales_df,
-        categories_df=categories_df,
-        target_client='ООО "Айса"',
-        category_order_df=category_order_df,
-    )
-    general_rnp_table = _build_general_rnp_summary_table(
-        spec_df=spec_df,
-        tradition_df=tradition_df,
-        target_client_df=target_client_sales_df,
-        receivables_df=receivables_df,
-        cash_inflow_df=cash_inflow_df,
-        category_order_df=category_order_df,
-    )
-    ai_report_table = build_ai_report_table(
-        spec_df=spec_df,
-        tradition_df=tradition_df,
-        receivables_df=receivables_df,
-        category_order_df=category_order_df,
-    )
     hardware_dynamics_table = _build_hardware_dynamics_export_table(
         hardware_levels_df
     )
@@ -2323,8 +2303,6 @@ def _build_full_report_excel(
             ("ДЗ Спец розница", dz_spec_table),
             ("Факторный анализ", factor_table),
             ("Традиция", tradition_table),
-            ("Общий РНП", general_rnp_table),
-            ("ИИ отчёт", ai_report_table),
             ("Динамика железа", hardware_dynamics_table),
         ]
         if _has_export_data(orders_sheet):
