@@ -219,6 +219,118 @@ def match_turnover_spec_mask(
     return razrez_mask
 
 
+def build_known_razrez_keys(categories_df: pd.DataFrame) -> set[str]:
+    """Собирает ключи разрезов из справочника categories (столбец «Разрез» / «Разрез 1»)."""
+    razrez_col = get_razrez_source_column(categories_df)
+    if razrez_col is None or categories_df.empty:
+        return set()
+
+    keys: set[str] = set()
+    for raw in categories_df[razrez_col].dropna().astype(str).str.strip():
+        if not raw:
+            continue
+        normalized = normalize_razrez_value(raw)
+        razrez_key = _razrez_match_key(normalized)
+        if not razrez_key:
+            continue
+        keys.add(razrez_key)
+        if "/" in razrez_key:
+            keys.update(part.strip() for part in razrez_key.split("/") if part.strip())
+    return keys
+
+
+def resolve_turnover_match_mode(
+    label: str,
+    known_categories: set[str],
+    known_razrez_keys: set[str],
+) -> str:
+    """Определяет, искать строку оборачиваемости как категорию или как разрез 1."""
+    cleaned = str(label).strip()
+    if not cleaned:
+        return "category"
+    if cleaned.lower().startswith(SLICE_PREFIX):
+        return "razrez"
+
+    label_key = _label_key(cleaned)
+    cat_keys = {_label_key(name) for name in known_categories if name}
+    razrez_key = _razrez_match_key(normalize_razrez_value(cleaned))
+
+    in_categories = label_key in cat_keys
+    in_razrez = bool(razrez_key) and (
+        razrez_key in known_razrez_keys
+        or any(
+            razrez_key in known_key or known_key in razrez_key
+            for known_key in known_razrez_keys
+        )
+    )
+
+    if in_categories and not in_razrez:
+        return "category"
+    if in_razrez and not in_categories:
+        return "razrez"
+    if in_categories:
+        return "category"
+    if in_razrez:
+        return "razrez"
+    return "category"
+
+
+def _is_coal_product_mask(df: pd.DataFrame) -> pd.Series:
+    """Маска строк с углём по названию товара (как в data_prep для продаж)."""
+    if df.empty:
+        return pd.Series(dtype=bool)
+
+    product_cols = [col for col in ("Товар ур.1", "Товар ур.2", "Товар ур.3") if col in df.columns]
+    if not product_cols:
+        return pd.Series(False, index=df.index)
+
+    return df[product_cols].astype(str).apply(
+        lambda series: series.str.contains("Уголь", case=False, na=False)
+    ).any(axis=1)
+
+
+def _razrez_label_implies_coal(label: str) -> bool:
+    patterns = _razrez_match_patterns(normalize_razrez_value(label))
+    return any("уголь" in pattern for pattern in patterns)
+
+
+def _razrez_label_implies_bks_tks(label: str) -> bool:
+    patterns = _razrez_match_patterns(normalize_razrez_value(label))
+    return any(pattern in ("бкс", "ткс") or "бкс" in pattern or "ткс" in pattern for pattern in patterns)
+
+
+def _match_turnover_by_category(df: pd.DataFrame, label: str) -> pd.Series:
+    categories = _category_series(df).map(_label_key)
+    return categories.eq(_label_key(label))
+
+
+def _match_turnover_by_razrez(df: pd.DataFrame, label: str) -> pd.Series:
+    razrez = _razrez_series(df)
+    mask = _razrez_matches_series(razrez, normalize_razrez_value(label))
+
+    if _razrez_label_implies_coal(label):
+        mask = mask | _is_coal_product_mask(df)
+    if _razrez_label_implies_bks_tks(label):
+        mask = mask | _is_bks_tks_mask(df)
+    return mask
+
+
+def match_turnover_label_mask(
+    df: pd.DataFrame,
+    label: str,
+    known_categories: set[str],
+    known_razrez_keys: set[str],
+) -> pd.Series:
+    """Маска для строки столбца «Оборачиваемость»: категория или разрез 1."""
+    if df.empty:
+        return pd.Series(dtype=bool)
+
+    mode = resolve_turnover_match_mode(label, known_categories, known_razrez_keys)
+    if mode == "razrez":
+        return _match_turnover_by_razrez(df, label)
+    return _match_turnover_by_category(df, label)
+
+
 def match_spec_mask(df: pd.DataFrame, spec: CategoryRowSpec) -> pd.Series:
     """Маска строк DataFrame, попадающих под строку category_order."""
     if df.empty:

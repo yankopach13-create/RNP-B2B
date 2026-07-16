@@ -5,13 +5,12 @@ from typing import List
 
 from features.category_order import (
     COL_TURNOVER,
-    CategoryRowSpec,
-    build_razrez_parent_map,
+    _razrez_match_key,
+    build_known_razrez_keys,
     collect_known_category_names,
     load_category_order_list,
-    match_turnover_spec_mask,
+    match_turnover_label_mask,
     normalize_razrez_value,
-    parse_category_order,
 )
 from features.data_prep import (
     PRODUCT_COLUMNS,
@@ -19,6 +18,39 @@ from features.data_prep import (
     _normalise_product_columns,
     _normalise_category_name,
 )
+
+
+def _enrich_turnover_razrez(df: pd.DataFrame) -> pd.DataFrame:
+    """Подставляет разрез «уголь» для кальянного угля без разреза в справочнике."""
+    product_cols = [col for col in PRODUCT_COLUMNS if col in df.columns]
+    if not product_cols:
+        return df
+
+    mask_hookah_coal = df[product_cols].astype(str).apply(
+        lambda series: series.str.contains("Уголь", case=False, na=False)
+    ).any(axis=1)
+    df.loc[mask_hookah_coal & df["Разрез"].eq(""), "Разрез"] = "уголь"
+    return df
+
+
+def _collect_turnover_razrez_keys(
+    categories_df: pd.DataFrame,
+    order: list[str],
+) -> set[str]:
+    """Ключи разрезов из справочника categories и строк «в т.ч. …» в category_order."""
+    keys = build_known_razrez_keys(categories_df)
+    slice_prefix = "в т.ч."
+    for label in order:
+        cleaned = str(label).strip()
+        if not cleaned or not cleaned.lower().startswith(slice_prefix):
+            continue
+        razrez_key = _razrez_match_key(normalize_razrez_value(cleaned))
+        if not razrez_key:
+            continue
+        keys.add(razrez_key)
+        if "/" in razrez_key:
+            keys.update(part.strip() for part in razrez_key.split("/") if part.strip())
+    return keys
 
 
 def calculate_turnover_by_category(
@@ -70,6 +102,7 @@ def calculate_turnover_by_category(
         lambda name: _normalise_category_name(name, known_categories)
     )
     df["Разрез"] = df["Разрез"].fillna("").astype(str).map(normalize_razrez_value)
+    df = _enrich_turnover_razrez(df)
 
     if (
         "Остаток сред.дн. (Q)" not in df.columns
@@ -98,29 +131,37 @@ def calculate_turnover_by_category(
     ).fillna(0.0)
 
     order = load_category_order_list(category_order_df, COL_TURNOVER)
-    specs = parse_category_order(order)
-    razrez_parent_map = build_razrez_parent_map(categories_df, known_categories)
+    known_razrez_keys = _collect_turnover_razrez_keys(categories_df, order)
 
     rows = []
-    for spec in specs:
-        stock, sales = _sum_turnover_metrics(df, spec, razrez_parent_map)
+    for label in order:
+        cleaned_label = str(label).strip()
+        if not cleaned_label:
+            continue
+        stock, sales = _sum_turnover_metrics(
+            df,
+            cleaned_label,
+            known_categories,
+            known_razrez_keys,
+        )
         turnover_value = _calc_turnover(stock, sales, period_days)
-        rows.append({"Категория": spec.label, "Оборачиваемость": turnover_value})
+        rows.append({"Категория": cleaned_label, "Оборачиваемость": turnover_value})
 
     return pd.DataFrame(rows)
 
 
 def _sum_turnover_metrics(
     df: pd.DataFrame,
-    spec: CategoryRowSpec,
-    razrez_parent_map: dict[str, set[str]] | None = None,
+    label: str,
+    known_categories: set[str],
+    known_razrez_keys: set[str],
 ) -> tuple[float, float]:
     if df.empty:
         return 0.0, 0.0
 
     stock_series = pd.to_numeric(df["Остаток сред.дн. (Q)"], errors="coerce").fillna(0.0)
     sales_series = pd.to_numeric(df["Продажи (Q)"], errors="coerce").fillna(0.0)
-    mask = match_turnover_spec_mask(df, spec, razrez_parent_map)
+    mask = match_turnover_label_mask(df, label, known_categories, known_razrez_keys)
     return float(stock_series.loc[mask].sum()), float(sales_series.loc[mask].sum())
 
 
