@@ -97,6 +97,128 @@ def _label_key(value: object) -> str:
     return cleaned
 
 
+def _razrez_match_key(value: object) -> str:
+    """Ключ разреза без единиц измерения («, шт.») для гибкого сопоставления."""
+    key = _label_key(value)
+    for suffix in (", шт", " шт", ",шт"):
+        if key.endswith(suffix):
+            key = key[: -len(suffix)].rstrip().rstrip(",")
+    return key
+
+
+def _razrez_match_patterns(spec_razrez: str) -> list[str]:
+    """Шаблоны для сопоставления разреза: целиком и по частям «БКС/ТКС»."""
+    key = _razrez_match_key(spec_razrez)
+    if not key:
+        return []
+    patterns = [key]
+    if "/" in key:
+        patterns.extend(part.strip() for part in key.split("/") if part.strip())
+    return list(dict.fromkeys(patterns))
+
+
+def _razrez_matches_series(razrez_series: pd.Series, spec_razrez: str) -> pd.Series:
+    """Маска строк, у которых разрез совпадает с подписью из category_order."""
+    patterns = _razrez_match_patterns(spec_razrez)
+    if not patterns:
+        return pd.Series(False, index=razrez_series.index)
+
+    keys = razrez_series.map(_razrez_match_key)
+    mask = pd.Series(False, index=razrez_series.index)
+    for pattern in patterns:
+        mask = mask | keys.eq(pattern) | keys.str.contains(pattern, regex=False, na=False)
+    return mask
+
+
+def _lookup_parent_keys_for_razrez(
+    razrez_parent_map: dict[str, set[str]],
+    spec_razrez: str,
+) -> set[str]:
+    """Находит родительские категории по разрезу в справочнике categories."""
+    parents: set[str] = set()
+    for pattern in _razrez_match_patterns(spec_razrez):
+        parents |= razrez_parent_map.get(pattern, set())
+    return parents
+
+
+def build_razrez_parent_map(
+    categories_df: pd.DataFrame,
+    known_categories: set[str] | None = None,
+) -> dict[str, set[str]]:
+    """Строит карту «разрез → родительские категории» из справочника categories."""
+    cat_col = get_category_source_column(categories_df)
+    if cat_col is None or categories_df.empty:
+        return {}
+
+    from features.data_prep import _normalise_category_name
+
+    razrez_col = get_razrez_source_column(categories_df)
+    mapping = categories_df.copy()
+    parent_names = mapping[cat_col].fillna("").astype(str).str.strip()
+    if razrez_col:
+        razrez_values = (
+            mapping[razrez_col]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .map(normalize_razrez_value)
+        )
+    else:
+        razrez_values = pd.Series([""] * len(mapping), index=mapping.index, dtype="string")
+
+    known = known_categories or set()
+    result: dict[str, set[str]] = {}
+    for parent_name, razrez_value in zip(parent_names, razrez_values):
+        if not razrez_value:
+            continue
+        parent_norm = _normalise_category_name(parent_name, known)
+        parent_key = _label_key(parent_norm)
+        razrez_key = _razrez_match_key(razrez_value)
+        if not parent_key or not razrez_key:
+            continue
+        result.setdefault(razrez_key, set()).add(parent_key)
+        if "/" in razrez_key:
+            for part in razrez_key.split("/"):
+                part = part.strip()
+                if part:
+                    result.setdefault(part, set()).add(parent_key)
+    return result
+
+
+def match_turnover_spec_mask(
+    df: pd.DataFrame,
+    spec: CategoryRowSpec,
+    razrez_parent_map: dict[str, set[str]] | None = None,
+) -> pd.Series:
+    """Маска для оборачиваемости: категория, разрез 1 или авто-родитель из справочника."""
+    if df.empty:
+        return pd.Series(dtype=bool)
+
+    categories = _category_series(df).map(_label_key)
+    razrez = _razrez_series(df)
+
+    if not spec.is_slice:
+        return categories.eq(_label_key(spec.parent_category))
+
+    if not spec.razrez:
+        return pd.Series(False, index=df.index)
+
+    razrez_mask = _razrez_matches_series(razrez, spec.razrez)
+
+    if spec.parent_category:
+        return categories.eq(_label_key(spec.parent_category)) & razrez_mask
+
+    parent_map = razrez_parent_map or {}
+    parent_keys = _lookup_parent_keys_for_razrez(parent_map, spec.razrez)
+
+    if len(parent_keys) == 1:
+        return categories.eq(next(iter(parent_keys))) & razrez_mask
+    if len(parent_keys) > 1:
+        return categories.isin(parent_keys) & razrez_mask
+
+    return razrez_mask
+
+
 def match_spec_mask(df: pd.DataFrame, spec: CategoryRowSpec) -> pd.Series:
     """Маска строк DataFrame, попадающих под строку category_order."""
     if df.empty:

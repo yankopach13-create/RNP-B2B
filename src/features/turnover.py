@@ -6,9 +6,11 @@ from typing import List
 from features.category_order import (
     COL_TURNOVER,
     CategoryRowSpec,
+    build_razrez_parent_map,
     collect_known_category_names,
     load_category_order_list,
-    match_spec_mask,
+    match_turnover_spec_mask,
+    normalize_razrez_value,
     parse_category_order,
 )
 from features.data_prep import (
@@ -67,7 +69,7 @@ def calculate_turnover_by_category(
     df["Категория агрег."] = df["Категория агрег."].apply(
         lambda name: _normalise_category_name(name, known_categories)
     )
-    df["Разрез"] = df["Разрез"].fillna("").astype(str).str.strip()
+    df["Разрез"] = df["Разрез"].fillna("").astype(str).map(normalize_razrez_value)
 
     if (
         "Остаток сред.дн. (Q)" not in df.columns
@@ -97,10 +99,11 @@ def calculate_turnover_by_category(
 
     order = load_category_order_list(category_order_df, COL_TURNOVER)
     specs = parse_category_order(order)
+    razrez_parent_map = build_razrez_parent_map(categories_df, known_categories)
 
     rows = []
     for spec in specs:
-        stock, sales = _sum_turnover_metrics(df, spec)
+        stock, sales = _sum_turnover_metrics(df, spec, razrez_parent_map)
         turnover_value = _calc_turnover(stock, sales, period_days)
         rows.append({"Категория": spec.label, "Оборачиваемость": turnover_value})
 
@@ -108,14 +111,16 @@ def calculate_turnover_by_category(
 
 
 def _sum_turnover_metrics(
-    df: pd.DataFrame, spec: CategoryRowSpec
+    df: pd.DataFrame,
+    spec: CategoryRowSpec,
+    razrez_parent_map: dict[str, set[str]] | None = None,
 ) -> tuple[float, float]:
     if df.empty:
         return 0.0, 0.0
 
     stock_series = pd.to_numeric(df["Остаток сред.дн. (Q)"], errors="coerce").fillna(0.0)
     sales_series = pd.to_numeric(df["Продажи (Q)"], errors="coerce").fillna(0.0)
-    mask = match_spec_mask(df, spec)
+    mask = match_turnover_spec_mask(df, spec, razrez_parent_map)
     return float(stock_series.loc[mask].sum()), float(sales_series.loc[mask].sum())
 
 
