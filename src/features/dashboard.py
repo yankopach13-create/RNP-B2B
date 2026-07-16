@@ -550,7 +550,35 @@ def render_special_retail_dashboard(
         )
 
         st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-        _render_hardware_sales_dynamics_panel(hardware_levels_df)
+        _panel_height = _table_height_from_rows(4)
+        col_hardware, col_ref_log = st.columns([1.05, 1], gap="medium")
+        with col_hardware:
+            _render_hardware_sales_dynamics_panel(
+                hardware_levels_df,
+                table_height=_panel_height,
+            )
+        with col_ref_log:
+            st.markdown(
+                "<div style='margin-top:6px;'><strong>Добавлено в справочник</strong></div>",
+                unsafe_allow_html=True,
+            )
+            _ref_log_df = _reference_additions_log_dataframe()
+            if _ref_log_df.empty:
+                st.caption(
+                    "Пока нет записей. После нажатия «Обновить справочники и пересчитать отчёт» "
+                    "в блоке быстрого добавления строки появятся здесь (только в этой сессии браузера)."
+                )
+            else:
+                st.dataframe(
+                    _ref_log_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=_panel_height,
+                    column_config={
+                        col: st.column_config.TextColumn(col)
+                        for col in _ref_log_df.columns
+                    },
+                )
 
         st.markdown("---")
         with st.container():
@@ -578,26 +606,6 @@ def render_special_retail_dashboard(
                         if col != "Показатель"
                     },
                 )
-
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-        st.markdown("<strong>Добавлено в справочник</strong>", unsafe_allow_html=True)
-        _ref_log_df = _reference_additions_log_dataframe()
-        if _ref_log_df.empty:
-            st.caption(
-                "Пока нет записей. После нажатия «Обновить справочники и пересчитать отчёт» "
-                "в блоке быстрого добавления строки появятся здесь (только в этой сессии браузера)."
-            )
-        else:
-            _ref_log_height = _table_height_from_rows(max(4, min(len(_ref_log_df), 12)))
-            st.dataframe(
-                _ref_log_df,
-                use_container_width=True,
-                hide_index=True,
-                height=_ref_log_height,
-                column_config={
-                    col: st.column_config.TextColumn(col) for col in _ref_log_df.columns
-                },
-            )
 
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
     general_toggle_label = (
@@ -678,8 +686,9 @@ def render_special_retail_dashboard(
 
 def _render_hardware_sales_dynamics_panel(
     hardware_levels_df: pd.DataFrame | None,
+    table_height: int,
 ) -> None:
-    """Таблица «Динамика продаж под-систем и расходников» справа от клиентского блока."""
+    """Таблица «Динамика продаж под-систем и расходников»."""
     st.markdown(
         (
             "<div style='margin-top:6px;'>"
@@ -799,7 +808,7 @@ def _render_hardware_sales_dynamics_panel(
         hardware_table,
         use_container_width=True,
         hide_index=True,
-        height=_table_height_from_rows(len(hardware_table)),
+        height=table_height,
         column_config={
             "Товар": st.column_config.TextColumn("Товар"),
             "Продажи, шт.": st.column_config.TextColumn("Продажи, шт."),
