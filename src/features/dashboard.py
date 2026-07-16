@@ -523,38 +523,34 @@ def render_special_retail_dashboard(
 
         st.markdown("---")
         _init_reference_additions_log()
-        col_client_block, col_hardware_dynamics = st.columns([1.05, 1], gap="medium")
-        with col_client_block:
-            _client_count = _count_clients(spec_df)
-            _client_count_display = _format_quantity(float(_client_count)) or "0"
-            _default_week_num = _client_block_default_week_from_spec(spec_df)
-            st.markdown(
-                (
-                    "<div style='margin-top:6px;'><strong>Клиентский блок - кол-во контрагентов "
-                    f'<span style="color:{_HEADER_METRIC_VALUE_COLOR};font-weight:700;font-size:1.22em;">'
-                    f"{_client_count_display}</span></strong></div>"
-                ),
-                unsafe_allow_html=True,
-            )
-            _week_for_table = get_client_block_week_number(_default_week_num)
-            spec_for_client_block = _spec_df_for_client_block_table(spec_df, _week_for_table)
-            client_block_df = _build_client_block_table(spec_for_client_block)
-            _client_height = _table_height_from_rows(4)
-            st.dataframe(
-                client_block_df,
-                use_container_width=True,
-                hide_index=True,
-                height=_client_height,
-                column_config={
-                    col: st.column_config.TextColumn(col)
-                    for col in client_block_df.columns
-                },
-            )
-        with col_hardware_dynamics:
-            _render_hardware_sales_dynamics_panel(
-                hardware_levels_df,
-                table_height=_client_height,
-            )
+        _client_count = _count_clients(spec_df)
+        _client_count_display = _format_quantity(float(_client_count)) or "0"
+        _default_week_num = _client_block_default_week_from_spec(spec_df)
+        st.markdown(
+            (
+                "<div style='margin-top:6px;'><strong>Клиентский блок - кол-во контрагентов "
+                f'<span style="color:{_HEADER_METRIC_VALUE_COLOR};font-weight:700;font-size:1.22em;">'
+                f"{_client_count_display}</span></strong></div>"
+            ),
+            unsafe_allow_html=True,
+        )
+        _week_for_table = get_client_block_week_number(_default_week_num)
+        spec_for_client_block = _spec_df_for_client_block_table(spec_df, _week_for_table)
+        client_block_df = _build_client_block_table(spec_for_client_block)
+        _client_height = _table_height_from_rows(len(client_block_df))
+        st.dataframe(
+            client_block_df,
+            use_container_width=True,
+            hide_index=True,
+            height=_client_height,
+            column_config={
+                col: st.column_config.TextColumn(col)
+                for col in client_block_df.columns
+            },
+        )
+
+        st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+        _render_hardware_sales_dynamics_panel(hardware_levels_df)
 
         st.markdown("---")
         with st.container():
@@ -682,7 +678,6 @@ def render_special_retail_dashboard(
 
 def _render_hardware_sales_dynamics_panel(
     hardware_levels_df: pd.DataFrame | None,
-    table_height: int,
 ) -> None:
     """Таблица «Динамика продаж под-систем и расходников» справа от клиентского блока."""
     st.markdown(
@@ -804,7 +799,7 @@ def _render_hardware_sales_dynamics_panel(
         hardware_table,
         use_container_width=True,
         hide_index=True,
-        height=table_height,
+        height=_table_height_from_rows(len(hardware_table)),
         column_config={
             "Товар": st.column_config.TextColumn("Товар"),
             "Продажи, шт.": st.column_config.TextColumn("Продажи, шт."),
