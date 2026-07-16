@@ -329,6 +329,7 @@ def render_special_retail_dashboard(
         turnover_7_df=turnover_7_df,
         receivables_df=receivables_df,
         cash_inflow_df=cash_inflow_df,
+        hardware_levels_df=hardware_levels_df,
         contractors_fallback_df=contractors_df,
         categories_fallback_df=categories_df,
         category_order_fallback_df=category_order_df,
@@ -2154,6 +2155,36 @@ def _read_latest_reference(ref_key: str, fallback_df: pd.DataFrame) -> pd.DataFr
         return fallback_df
 
 
+def _build_hardware_dynamics_export_table(
+    hardware_levels_df: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Таблица «Динамика продаж под-систем и расходников» для Excel."""
+    try:
+        cartridge_ref_df = load_reference(REF_SALES_POD_CARTRIDGE)
+    except Exception:  # noqa: BLE001
+        cartridge_ref_df = pd.DataFrame()
+
+    try:
+        hardware_result = build_hardware_sales_result(
+            reference_df=cartridge_ref_df,
+            levels_df=hardware_levels_df,
+        )
+    except ValueError:
+        hardware_result = build_hardware_sales_result(
+            reference_df=cartridge_ref_df,
+            levels_df=None,
+        )
+
+    table = hardware_result.table.copy()
+    if table.empty:
+        return table
+
+    table["Продажи, шт."] = pd.to_numeric(
+        table["Продажи, шт."], errors="coerce"
+    ).fillna(0.0)
+    return table
+
+
 def _build_full_report_excel(
     sales_df: pd.DataFrame,
     orders_df: pd.DataFrame | None,
@@ -2164,6 +2195,7 @@ def _build_full_report_excel(
     contractors_fallback_df: pd.DataFrame,
     categories_fallback_df: pd.DataFrame,
     category_order_fallback_df: pd.DataFrame | None = None,
+    hardware_levels_df: pd.DataFrame | None = None,
 ) -> bytes | None:
     contractors_df = _read_latest_reference(REF_CONTRACTORS, contractors_fallback_df)
     categories_df = _read_latest_reference(REF_CATEGORIES, categories_fallback_df)
@@ -2239,6 +2271,29 @@ def _build_full_report_excel(
         receivables_df=receivables_df,
         category_order_df=category_order_df,
     )
+    target_client_sales_df = _prepare_target_client_sales_df(
+        sales_df=sales_df,
+        categories_df=categories_df,
+        target_client='ООО "Айса"',
+        category_order_df=category_order_df,
+    )
+    general_rnp_table = _build_general_rnp_summary_table(
+        spec_df=spec_df,
+        tradition_df=tradition_df,
+        target_client_df=target_client_sales_df,
+        receivables_df=receivables_df,
+        cash_inflow_df=cash_inflow_df,
+        category_order_df=category_order_df,
+    )
+    ai_report_table = build_ai_report_table(
+        spec_df=spec_df,
+        tradition_df=tradition_df,
+        receivables_df=receivables_df,
+        category_order_df=category_order_df,
+    )
+    hardware_dynamics_table = _build_hardware_dynamics_export_table(
+        hardware_levels_df
+    )
     client_block_export = _build_client_block_export_table(spec_df)
 
     output = BytesIO()
@@ -2256,16 +2311,31 @@ def _build_full_report_excel(
                 ("Оборачиваемость", turnover_table),
             ]
         )
+        orders_sheet = _stack_tables_with_titles(
+            [
+                ("Заказы — Сводка", orders_summary_table),
+                ("Заказы — Категории", orders_category_table),
+            ]
+        )
         sheets_to_write = [
             ("Финансы", finance_sheet),
             ("Категории_Оборач.", categories_turnover_sheet),
             ("ДЗ Спец розница", dz_spec_table),
             ("Факторный анализ", factor_table),
             ("Традиция", tradition_table),
+            ("Общий РНП", general_rnp_table),
+            ("ИИ отчёт", ai_report_table),
+            ("Динамика железа", hardware_dynamics_table),
         ]
+        if _has_export_data(orders_sheet):
+            sheets_to_write.append(("Заказы", orders_sheet))
         written_count = 0
         for sheet_name, sheet_df in sheets_to_write:
-            if _has_export_data(sheet_df):
+            if sheet_name == "Динамика железа":
+                if sheet_df is not None and not sheet_df.empty:
+                    _write_sheet(writer, sheet_name, sheet_df)
+                    written_count += 1
+            elif _has_export_data(sheet_df):
                 _write_sheet(writer, sheet_name, sheet_df)
                 written_count += 1
         if _has_export_data(client_block_export):

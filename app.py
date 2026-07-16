@@ -32,9 +32,11 @@ try:
     from data.references import (  # noqa: E402
         REF_CATEGORIES,
         REF_CONTRACTORS,
+        REF_SALES_POD_CARTRIDGE,
         clear_session_references,
         get_reference_label,
         load_category_order_reference,
+        load_reference,
         preload_references,
         sheets_configured,
     )
@@ -396,6 +398,10 @@ def main() -> None:
         contractors_df = refs[REF_CONTRACTORS]
         categories_df = refs[REF_CATEGORIES]
         category_order_df = load_category_order_reference()
+        try:
+            load_reference(REF_SALES_POD_CARTRIDGE)
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:  # noqa: BLE001
         source = "Google Sheets" if sheets_configured() else "локальных файлов"
         st.error(f"Не удалось загрузить справочники из {source}: {exc}")
