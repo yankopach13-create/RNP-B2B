@@ -18,12 +18,11 @@ from features.category_order import (
     COL_SPEC_RNP,
     COL_TRADITION_RNP,
     COL_TURNOVER,
-    calc_ai_misc_breakdown,
+    _label_key,
     extract_category_row_values,
     get_category_source_column,
     get_razrez_source_column,
     load_category_order_list,
-    resolve_label_value,
 )
 from features.data_prep import prepare_dataset
 from features.factor_analysis import (
@@ -89,6 +88,27 @@ _REFERENCE_ADDITIONS_LOG_KEY = "reference_additions_log"
 CLIENT_BLOCK_WEEK_INPUT_KEY = "client_block_week_number_input"
 EXCISE_LIQUID_PCS_INPUT_KEY = "excise_liquid_pcs_input"
 EXCISE_LIQUID_MARGIN_MULTIPLIER = 4.25
+
+# Порядок категорий в ИИ-отчёте (значения — из блока РНП, столбец «Категории РНП …»).
+AI_REPORT_SPEC_CATEGORY_LABELS = [
+    "ОЭС 2 мл, шт.",
+    "ОЭС 10 мл, шт.",
+    "Жидкость 25 мл, шт.",
+    "Pod-системы, шт.",
+    "Расходники, шт.",
+    "Кальянная продукция, шт.",
+    "в т.ч. Уголь, шт.",
+    "в т.ч. БКС/ТКС, шт.",
+    "Никотиновые паучи, шт.",
+    "Прочие товары, шт.",
+]
+
+AI_REPORT_TRADITION_CATEGORY_LABELS = [
+    "ОЭС 2 мл, шт.",
+    "ОЭС 10 мл, шт.",
+    "Никотиновые паучи, шт.",
+    "в т.ч. Уголь, шт.",
+]
 
 
 def get_excise_liquid_margin_deduction() -> float:
@@ -1719,6 +1739,30 @@ def _build_client_block_export_table(spec_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _vertical_metrics_lookup(table: pd.DataFrame) -> dict[str, str]:
+    """Словарь «Показатель → Значение» из вертикальной таблицы финансов РНП (блок «Общие»)."""
+    if table.empty:
+        return {}
+    result: dict[str, str] = {}
+    for _, row in table.iterrows():
+        label = str(row.get("Показатель", "")).strip()
+        if not label:
+            continue
+        result[label] = str(row.get("Значение", "")).strip()
+    return result
+
+
+def _lookup_category_row_value(categories: dict[str, str], label: str) -> str:
+    """Значение категории из блока РНП по подписи (с нечётким сопоставлением ключей)."""
+    if label in categories:
+        return categories[label]
+    target_key = _label_key(label)
+    for key, value in categories.items():
+        if _label_key(key) == target_key:
+            return str(value)
+    return ""
+
+
 def _build_ai_report_table(
     spec_df: pd.DataFrame,
     tradition_df: pd.DataFrame,
@@ -1727,17 +1771,37 @@ def _build_ai_report_table(
 ) -> pd.DataFrame:
     spec_order = load_category_order_list(category_order_df, COL_SPEC_RNP)
     tradition_order = load_category_order_list(category_order_df, COL_TRADITION_RNP)
+    margin_adjustment = get_excise_liquid_margin_deduction()
 
-    def _qty(df: pd.DataFrame, order: list[str], label: str) -> str:
-        return _format_quantity_compact(
-            resolve_label_value(df, order, label, value_column="Количество")
+    spec_finance = _vertical_metrics_lookup(
+        build_financial_metrics_vertical_table(
+            spec_df,
+            subdivisions=[],
+            include_overall=True,
+            aggregates={},
+            format_money=_format_money_compact,
+            overall_margin_adjustment=margin_adjustment,
         )
+    )
+    tradition_finance = _vertical_metrics_lookup(
+        build_financial_metrics_vertical_table(
+            tradition_df,
+            subdivisions=[],
+            include_overall=True,
+            aggregates={},
+            format_money=_format_money_compact,
+        )
+    )
 
-    spec_sales = _safe_sum(spec_df, "Продажи с НДС")
-    spec_margin = _safe_sum(spec_df, "Маржа") - get_excise_liquid_margin_deduction()
-    spec_sales_wo_vat = spec_sales / 1.2
-    spec_margin_pct = (
-        (spec_margin / spec_sales_wo_vat) * 100 if spec_sales_wo_vat else 0.0
+    spec_categories = extract_category_row_values(
+        spec_df,
+        spec_order,
+        format_value=_format_quantity_compact,
+    )
+    tradition_categories = extract_category_row_values(
+        tradition_df,
+        tradition_order,
+        format_value=_format_quantity_compact,
     )
 
     rtrade_mask = (
@@ -1747,19 +1811,8 @@ def _build_ai_report_table(
     )
     rtrade_sales = _safe_sum(spec_df.loc[rtrade_mask], "Продажи с НДС")
     rtrade_margin = _safe_sum(spec_df.loc[rtrade_mask], "Маржа")
-
-    tradition_sales = _safe_sum(tradition_df, "Продажи с НДС")
-    tradition_margin = _safe_sum(tradition_df, "Маржа")
-    tradition_sales_wo_vat = tradition_sales / 1.2
-    tradition_margin_pct = (
-        (tradition_margin / tradition_sales_wo_vat) * 100 if tradition_sales_wo_vat else 0.0
-    )
     dz_spec_total, _ = _calc_dz_total_by_reference(REF_DZ_SPEC, receivables_df)
     dz_trad_total, _ = _calc_dz_total_by_reference(REF_DZ_TRAD, receivables_df)
-
-    cartridges_qty, bks_qty, misc_net_qty, _ = calc_ai_misc_breakdown(
-        spec_df, spec_order, value_column="Количество"
-    )
 
     rows: list[dict[str, str]] = [
         {"Показатель": "Заказы", "Значение": ""},
@@ -1767,66 +1820,71 @@ def _build_ai_report_table(
             "Показатель": "Кол-во клиентов сделавших заказ B2B Спец.розница",
             "Значение": str(_count_clients(spec_df)),
         },
-        {"Показатель": "Продажи с НДС B2B Спец.розница", "Значение": _format_money_compact(spec_sales)},
-        {"Показатель": "Маржа B2B Спец.розница", "Значение": _format_money_compact(spec_margin)},
-        {"Показатель": "% Маржи B2B Спец.розница", "Значение": _format_percent(spec_margin_pct)},
-        {"Показатель": "Продажи с НДС Ртрейд", "Значение": _format_money_compact(rtrade_sales)},
-        {"Показатель": "Маржа Ртрейд", "Значение": _format_money_compact(rtrade_margin)},
-        {"Показатель": "Дебиторская задолженность B2B Спец.розница", "Значение": _format_money_compact(dz_spec_total)},
-        {"Показатель": "Дебиторская задолженность просроченная B2B Спец.розница", "Значение": ""},
         {
-            "Показатель": "Одноразовые электронные сигареты ( 2 мл ) B2B Спец.розница",
-            "Значение": _qty(spec_df, spec_order, "ОЭС 2 мл, шт."),
+            "Показатель": "Продажи с НДС B2B Спец.розница",
+            "Значение": spec_finance.get("Продажи с НДС", ""),
         },
         {
-            "Показатель": "Одноразовые электронные сигареты ( 10 мл ) B2B Спец.розница",
-            "Значение": _qty(spec_df, spec_order, "ОЭС 10 мл, шт."),
+            "Показатель": "Маржа B2B Спец.розница",
+            "Значение": spec_finance.get("Маржа", ""),
         },
         {
-            "Показатель": "Жидкость 25 мл. B2B Спец.розница",
-            "Значение": _qty(spec_df, spec_order, "Жидкость 25 мл, шт."),
+            "Показатель": "% Маржи B2B Спец.розница",
+            "Значение": spec_finance.get("% МД", ""),
         },
         {
-            "Показатель": "Под-системы B2B Спец.розница",
-            "Значение": _qty(spec_df, spec_order, "Pod-системы, шт."),
+            "Показатель": "Продажи с НДС Ртрейд",
+            "Значение": _format_money_compact(rtrade_sales),
         },
         {
-            "Показатель": "Расходники B2B Спец.розница",
-            "Значение": _qty(spec_df, spec_order, "Расходники, шт."),
+            "Показатель": "Маржа Ртрейд",
+            "Значение": _format_money_compact(rtrade_margin),
         },
         {
-            "Показатель": "Картриджи с жидкостью B2B Спец.розница",
-            "Значение": _format_quantity_compact(cartridges_qty),
-        },
-        {
-            "Показатель": "Прочие товары B2B Спец.розница",
-            "Значение": _format_quantity_compact(misc_net_qty),
-        },
-        {
-            "Показатель": "в т.ч.БКС B2B Спец.розница",
-            "Значение": _format_quantity_compact(bks_qty),
-        },
-        {
-            "Показатель": "в т.ч. Никотиновые паучи B2B Спец.розница",
-            "Значение": _qty(spec_df, spec_order, "Никотиновые паучи, шт."),
-        },
-        {"Показатель": "Продажи с НДС Традиция", "Значение": _format_money_compact(tradition_sales)},
-        {"Показатель": "Маржа Традиция", "Значение": _format_money_compact(tradition_margin)},
-        {"Показатель": "% Маржи Традиция", "Значение": _format_percent(tradition_margin_pct)},
-        {"Показатель": "Дебиторская задолженность Традиция", "Значение": _format_money_compact(dz_trad_total)},
-        {
-            "Показатель": "Одноразовые электронные сигареты ( 2 мл ) Традиция",
-            "Значение": _qty(tradition_df, tradition_order, "ОЭС 2 мл, шт."),
-        },
-        {
-            "Показатель": "Одноразовые электронные сигареты ( 10 мл ) Традиция",
-            "Значение": _qty(tradition_df, tradition_order, "ОЭС 10 мл, шт."),
-        },
-        {
-            "Показатель": "Никотиновые паучи Традиция",
-            "Значение": _qty(tradition_df, tradition_order, "Никотиновые паучи, шт."),
+            "Показатель": "Дебиторская задолженность B2B Спец.розница",
+            "Значение": _format_money_compact(dz_spec_total),
         },
     ]
+
+    for category_label in AI_REPORT_SPEC_CATEGORY_LABELS:
+        rows.append(
+            {
+                "Показатель": category_label,
+                "Значение": _lookup_category_row_value(spec_categories, category_label),
+            }
+        )
+
+    rows.extend(
+        [
+            {
+                "Показатель": "Продажи с НДС Традиция",
+                "Значение": tradition_finance.get("Продажи с НДС", ""),
+            },
+            {
+                "Показатель": "Маржа Традиция",
+                "Значение": tradition_finance.get("Маржа", ""),
+            },
+            {
+                "Показатель": "% Маржи Традиция",
+                "Значение": tradition_finance.get("% МД", ""),
+            },
+            {
+                "Показатель": "Дебиторская задолженность Традиция",
+                "Значение": _format_money_compact(dz_trad_total),
+            },
+        ]
+    )
+
+    for category_label in AI_REPORT_TRADITION_CATEGORY_LABELS:
+        rows.append(
+            {
+                "Показатель": category_label,
+                "Значение": _lookup_category_row_value(
+                    tradition_categories, category_label
+                ),
+            }
+        )
+
     return pd.DataFrame(rows)
 
 
