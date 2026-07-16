@@ -87,6 +87,7 @@ _REFERENCE_ADDITIONS_LOG_KEY = "reference_additions_log"
 # Ключи session_state для полей над блоками загрузки (неделя сбрасывается в app при новой загрузке).
 CLIENT_BLOCK_WEEK_INPUT_KEY = "client_block_week_number_input"
 EXCISE_LIQUID_PCS_INPUT_KEY = "excise_liquid_pcs_input"
+SPEC_ORDERS_COUNT_INPUT_KEY = "spec_orders_count_input"
 EXCISE_LIQUID_MARGIN_MULTIPLIER = 4.25
 
 AI_REPORT_VERSION = "2026-07-16-v2"
@@ -124,6 +125,20 @@ def get_excise_liquid_margin_deduction() -> float:
     return pcs * EXCISE_LIQUID_MARGIN_MULTIPLIER
 
 
+def get_spec_orders_count() -> int:
+    """Кол-во заказов Спец. розницы из поля ввода над блоками РНП."""
+    raw = st.session_state.get(SPEC_ORDERS_COUNT_INPUT_KEY, 0)
+    try:
+        return max(0, int(float(raw or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def format_spec_orders_count() -> str:
+    """Форматирование кол-ва заказов для таблиц отчётов."""
+    return _format_quantity_compact(get_spec_orders_count())
+
+
 def get_client_block_week_number(fallback: int) -> int:
     """Номер актуальной недели из поля ввода; если пусто — fallback из данных."""
     raw = st.session_state.get(CLIENT_BLOCK_WEEK_INPUT_KEY)
@@ -148,25 +163,28 @@ def get_client_block_week_number(fallback: int) -> int:
 
 
 def render_global_rnp_inputs(default_excise_liquid: int = 0) -> None:
-    """Поля «Актуальная неделя» и «Акцизной жидкости шт.» над кнопками-блоками РНП."""
+    """Поля «Актуальная неделя», «Акцизной жидкости шт.» и «Кол-во заказов» над блоками РНП."""
     st.markdown(
         f"""
         <style>
         .st-key-{CLIENT_BLOCK_WEEK_INPUT_KEY},
-        .st-key-{EXCISE_LIQUID_PCS_INPUT_KEY} {{
+        .st-key-{EXCISE_LIQUID_PCS_INPUT_KEY},
+        .st-key-{SPEC_ORDERS_COUNT_INPUT_KEY} {{
             max-width: 9.75rem;
             min-width: 9.75rem;
             width: 9.75rem;
         }}
         .st-key-{CLIENT_BLOCK_WEEK_INPUT_KEY} [data-testid="stTextInput"],
         .st-key-{CLIENT_BLOCK_WEEK_INPUT_KEY} [data-testid="stNumberInput"],
-        .st-key-{EXCISE_LIQUID_PCS_INPUT_KEY} [data-testid="stNumberInput"] {{
+        .st-key-{EXCISE_LIQUID_PCS_INPUT_KEY} [data-testid="stNumberInput"],
+        .st-key-{SPEC_ORDERS_COUNT_INPUT_KEY} [data-testid="stNumberInput"] {{
             max-width: 9.75rem;
             min-width: 9.75rem;
             width: 9.75rem;
         }}
         .st-key-{CLIENT_BLOCK_WEEK_INPUT_KEY} input,
-        .st-key-{EXCISE_LIQUID_PCS_INPUT_KEY} input {{
+        .st-key-{EXCISE_LIQUID_PCS_INPUT_KEY} input,
+        .st-key-{SPEC_ORDERS_COUNT_INPUT_KEY} input {{
             max-width: 9.75rem;
             min-width: 9.75rem;
             width: 9.75rem;
@@ -192,7 +210,9 @@ def render_global_rnp_inputs(default_excise_liquid: int = 0) -> None:
         unsafe_allow_html=True,
     )
 
-    _week_col, _excise_col, _spacer_col = st.columns([1.75, 1.75, 6.5], gap="large")
+    _week_col, _excise_col, _orders_col, _spacer_col = st.columns(
+        [1.75, 1.75, 1.75, 4.75], gap="large"
+    )
 
     with _week_col:
         st.markdown(
@@ -227,6 +247,24 @@ def render_global_rnp_inputs(default_excise_liquid: int = 0) -> None:
             help=(
                 "Умножается на 4,25 — полученная сумма вычитается только из общей маржи "
                 "Спец.розницы (группы подразделений не меняются)."
+            ),
+        )
+
+    with _orders_col:
+        st.markdown(
+            '<p class="rnp-global-inputs-label">Кол-во заказов:</p>',
+            unsafe_allow_html=True,
+        )
+        st.number_input(
+            "Кол-во заказов",
+            min_value=0,
+            value=0,
+            step=1,
+            key=SPEC_ORDERS_COUNT_INPUT_KEY,
+            label_visibility="collapsed",
+            help=(
+                "Количество заказов B2B Спец. розницы. Подставляется в ИИ-отчёт "
+                "и в блок «Общий РНП» (строка «Кол-во заказов»)."
             ),
         )
 
@@ -1821,7 +1859,7 @@ def build_ai_report_table(
     dz_trad_total, _ = _calc_dz_total_by_reference(REF_DZ_TRAD, receivables_df)
 
     rows: list[dict[str, str]] = [
-        {"Показатель": "Заказы", "Значение": ""},
+        {"Показатель": "Заказы", "Значение": format_spec_orders_count()},
         {
             "Показатель": "Кол-во клиентов сделавших заказ B2B Спец.розница",
             "Значение": str(_count_clients(spec_df)),
@@ -1948,7 +1986,7 @@ def _build_general_rnp_summary_table(
         {
             "Блок": "Спец розница",
             "Показатель": "Кол-во заказов",
-            "Общие": "",
+            "Общие": format_spec_orders_count(),
             'ООО "Айса"': "",
         },
         {
