@@ -103,11 +103,17 @@ AI_REPORT_SPEC_CATEGORY_LABELS = [
     "Прочие товары, шт.",
 ]
 
-AI_REPORT_TRADITION_CATEGORY_LABELS = [
-    "ОЭС 2 мл, шт.",
-    "ОЭС 10 мл, шт.",
-    "Никотиновые паучи, шт.",
-    "в т.ч. Уголь, шт.",
+AI_REPORT_TRADITION_CATEGORY_ROWS: list[tuple[str, str]] = [
+    (
+        "Одноразовые электронные сигареты ( 2 мл ) Традиция",
+        "ОЭС 2 мл, шт.",
+    ),
+    (
+        "Одноразовые электронные сигареты ( 10 мл ) Традиция",
+        "ОЭС 10 мл, шт.",
+    ),
+    ("Никотиновые паучи Традиция", "Никотиновые паучи, шт."),
+    ("в т.ч. Уголь, шт.", "в т.ч. Уголь, шт."),
 ]
 
 
@@ -1875,12 +1881,12 @@ def _build_ai_report_table(
         ]
     )
 
-    for category_label in AI_REPORT_TRADITION_CATEGORY_LABELS:
+    for display_label, lookup_label in AI_REPORT_TRADITION_CATEGORY_ROWS:
         rows.append(
             {
-                "Показатель": category_label,
+                "Показатель": display_label,
                 "Значение": _lookup_category_row_value(
-                    tradition_categories, category_label
+                    tradition_categories, lookup_label
                 ),
             }
         )
