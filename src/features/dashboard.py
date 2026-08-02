@@ -160,49 +160,6 @@ def get_client_block_week_number(fallback: int) -> int:
     return week
 
 
-_INPUT_FILE_LABELS: dict[str, str] = {
-    "sales": "Продажи",
-    "hardware": "Продажи железа (ур.3 / ур.4)",
-    "turnover_90": "Оборачиваемость (90 дней)",
-    "turnover_7": "Оборачиваемость (7 дней)",
-    "receivables": "Дебиторская задолженность (62 счёт)",
-    "cash_inflow": "Поступление ДС (51,62 счета)",
-}
-
-
-def _describe_loaded_inputs(
-    *,
-    sales_df: pd.DataFrame | None,
-    hardware_levels_df: pd.DataFrame | None,
-    turnover_90_df: pd.DataFrame | None,
-    turnover_7_df: pd.DataFrame | None,
-    receivables_df: pd.DataFrame | None,
-    cash_inflow_df: pd.DataFrame | None,
-) -> tuple[list[str], list[str]]:
-    """Возвращает списки загруженных и незагруженных файлов."""
-    presence = {
-        "sales": sales_df is not None,
-        "hardware": hardware_levels_df is not None,
-        "turnover_90": turnover_90_df is not None,
-        "turnover_7": turnover_7_df is not None,
-        "receivables": receivables_df is not None,
-        "cash_inflow": cash_inflow_df is not None,
-    }
-    loaded = [_INPUT_FILE_LABELS[key] for key, ok in presence.items() if ok]
-    missing = [_INPUT_FILE_LABELS[key] for key, ok in presence.items() if not ok]
-    return loaded, missing
-
-
-def _render_load_status_banner(loaded: list[str], missing: list[str]) -> None:
-    if not missing:
-        return
-    st.info(
-        "Частичный отчёт по загруженным файлам. "
-        f"**Загружено:** {', '.join(loaded)}. "
-        f"**Не загружено:** {', '.join(missing)}."
-    )
-
-
 def _inject_dashboard_styles() -> None:
     st.markdown(
         """
@@ -587,14 +544,6 @@ def render_special_retail_dashboard(
         )
 
     has_spec_retail = not spec_df.empty
-    loaded_files, missing_files = _describe_loaded_inputs(
-        sales_df=sales_df,
-        hardware_levels_df=hardware_levels_df,
-        turnover_90_df=turnover_90_df,
-        turnover_7_df=turnover_7_df,
-        receivables_df=receivables_df,
-        cash_inflow_df=cash_inflow_df,
-    )
     is_partial_report = not has_spec_retail
 
     if "show_rnp_block" not in st.session_state:
@@ -625,7 +574,6 @@ def render_special_retail_dashboard(
         category_order_fallback_df=category_order_df,
     )
     _inject_dashboard_styles()
-    _render_load_status_banner(loaded_files, missing_files)
 
     if new_clients and unmatched_products:
         st.info("🆕 Обнаружены новые клиенты и товары, распределите их в справочнике ниже.")
