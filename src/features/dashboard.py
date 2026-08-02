@@ -160,6 +160,275 @@ def get_client_block_week_number(fallback: int) -> int:
     return week
 
 
+_INPUT_FILE_LABELS: dict[str, str] = {
+    "sales": "Продажи",
+    "hardware": "Продажи железа (ур.3 / ур.4)",
+    "turnover_90": "Оборачиваемость (90 дней)",
+    "turnover_7": "Оборачиваемость (7 дней)",
+    "receivables": "Дебиторская задолженность (62 счёт)",
+    "cash_inflow": "Поступление ДС (51,62 счета)",
+}
+
+
+def _describe_loaded_inputs(
+    *,
+    sales_df: pd.DataFrame | None,
+    hardware_levels_df: pd.DataFrame | None,
+    turnover_90_df: pd.DataFrame | None,
+    turnover_7_df: pd.DataFrame | None,
+    receivables_df: pd.DataFrame | None,
+    cash_inflow_df: pd.DataFrame | None,
+) -> tuple[list[str], list[str]]:
+    """Возвращает списки загруженных и незагруженных файлов."""
+    presence = {
+        "sales": sales_df is not None,
+        "hardware": hardware_levels_df is not None,
+        "turnover_90": turnover_90_df is not None,
+        "turnover_7": turnover_7_df is not None,
+        "receivables": receivables_df is not None,
+        "cash_inflow": cash_inflow_df is not None,
+    }
+    loaded = [_INPUT_FILE_LABELS[key] for key, ok in presence.items() if ok]
+    missing = [_INPUT_FILE_LABELS[key] for key, ok in presence.items() if not ok]
+    return loaded, missing
+
+
+def _render_load_status_banner(loaded: list[str], missing: list[str]) -> None:
+    if not missing:
+        return
+    st.info(
+        "Частичный отчёт по загруженным файлам. "
+        f"**Загружено:** {', '.join(loaded)}. "
+        f"**Не загружено:** {', '.join(missing)}."
+    )
+
+
+def _inject_dashboard_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stButton"] button[kind="tertiary"] {
+            background-color: #0b2e6b !important;
+            color: #ffffff !important;
+            border: 1px solid #0b2e6b !important;
+            font-weight: 800 !important;
+            font-size: 1.05rem !important;
+            border-radius: 10px !important;
+            min-height: 44px !important;
+            padding: 0.5rem 1rem !important;
+            justify-content: flex-start !important;
+            text-align: left !important;
+        }
+        div[data-testid="stButton"] button[kind="tertiary"]:hover,
+        div[data-testid="stButton"] button[kind="tertiary"]:active,
+        div[data-testid="stButton"] button[kind="tertiary"]:focus,
+        div[data-testid="stButton"] button[kind="tertiary"]:focus-visible {
+            background-color: #082554 !important;
+            border-color: #082554 !important;
+            color: #ffffff !important;
+            box-shadow: none !important;
+            outline: none !important;
+        }
+        div[data-testid="stButton"] button[kind="secondary"] {
+            background-color: #1f5d35 !important;
+            color: #ffffff !important;
+            border: 1px solid #1f5d35 !important;
+            font-weight: 800 !important;
+            font-size: 1.05rem !important;
+            border-radius: 10px !important;
+            min-height: 44px !important;
+            padding: 0.5rem 1rem !important;
+            justify-content: flex-start !important;
+            text-align: left !important;
+        }
+        div[data-testid="stButton"] button[kind="secondary"]:hover {
+            background-color: #17472a !important;
+            border-color: #17472a !important;
+        }
+        .st-key-toggle_ai_rnp_block_btn button {
+            background-color: #b56a1a !important;
+            color: #ffffff !important;
+            border: 1px solid #b56a1a !important;
+            font-weight: 800 !important;
+            font-size: 1.05rem !important;
+            border-radius: 10px !important;
+            min-height: 44px !important;
+            padding: 0.5rem 1rem !important;
+            justify-content: flex-start !important;
+            text-align: left !important;
+        }
+        .st-key-toggle_ai_rnp_block_btn button:hover,
+        .st-key-toggle_ai_rnp_block_btn button:active,
+        .st-key-toggle_ai_rnp_block_btn button:focus,
+        .st-key-toggle_ai_rnp_block_btn button:focus-visible {
+            background-color: #955716 !important;
+            border-color: #955716 !important;
+            color: #ffffff !important;
+            box-shadow: none !important;
+            outline: none !important;
+        }
+        div[data-testid="stDownloadButton"] button {
+            background: transparent !important;
+            color: inherit !important;
+            border: 1px solid rgba(128, 128, 128, 0.4) !important;
+            font-weight: 700 !important;
+        }
+        div[data-testid="stDownloadButton"] button:hover {
+            background: rgba(128, 128, 128, 0.08) !important;
+            border-color: rgba(128, 128, 128, 0.65) !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_download_excel_button(
+    excel_bytes: bytes | None,
+    *,
+    is_partial: bool,
+    week_num: int | None,
+    key: str = "download_excel_btn",
+) -> None:
+    if excel_bytes is None:
+        return
+    if is_partial:
+        file_name = "РНП — частичный отчёт.xlsx"
+        label = "Скачать частичный отчёт в Excel"
+    else:
+        week_label = week_num if week_num is not None else "?"
+        file_name = f"РНП Спец. розница и Традиция — неделя {week_label}.xlsx"
+        label = "Скачать РНП отчёт в Excel"
+    st.download_button(
+        label,
+        data=excel_bytes,
+        file_name=file_name,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="secondary",
+        use_container_width=True,
+        key=key,
+    )
+
+
+def _render_standalone_report_sections(
+    *,
+    receivables_df: pd.DataFrame | None,
+    cash_inflow_df: pd.DataFrame | None,
+    turnover_90_df: pd.DataFrame | None,
+    turnover_7_df: pd.DataFrame | None,
+    hardware_levels_df: pd.DataFrame | None,
+    categories_df: pd.DataFrame,
+    category_order_df: pd.DataFrame | None,
+    tradition_df: pd.DataFrame,
+) -> bool:
+    """Блоки отчёта, не требующие файла «Продажи». Возвращает True, если что-то отрисовано."""
+    rendered = False
+
+    if receivables_df is not None:
+        rendered = True
+        st.markdown("### Дебиторская задолженность")
+        col_dz_spec, col_dz_trad = st.columns(2, gap="medium")
+        with col_dz_spec:
+            dz_table, dz_total, dz_error = _build_dz_spec_table(receivables_df=receivables_df)
+            if dz_error:
+                st.markdown("**ДЗ Спец розница**")
+                st.info(dz_error)
+            else:
+                st.markdown(
+                    (
+                        "<strong>ДЗ Спец розница — "
+                        f'<span style="color:{_HEADER_METRIC_VALUE_COLOR};font-weight:700;">'
+                        f"{_format_money(dz_total)}</span></strong>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+                st.dataframe(
+                    dz_table,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=_table_height_from_rows(min(len(dz_table), 8)),
+                    column_config={
+                        "Контрагент": st.column_config.TextColumn("Контрагент"),
+                        "ДЗ": st.column_config.TextColumn("ДЗ"),
+                    },
+                )
+        with col_dz_trad:
+            dz_trad_table, dz_trad_total, dz_trad_error = _build_dz_trad_table(
+                receivables_df=receivables_df
+            )
+            if dz_trad_error:
+                st.markdown("**ДЗ Традиция**")
+                st.info(dz_trad_error)
+            else:
+                st.markdown(
+                    (
+                        "<strong>ДЗ Традиция — "
+                        f'<span style="color:{_HEADER_METRIC_VALUE_COLOR};font-weight:700;">'
+                        f"{_format_money(dz_trad_total)}</span></strong>"
+                    ),
+                    unsafe_allow_html=True,
+                )
+                st.dataframe(
+                    dz_trad_table,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=_table_height_from_rows(min(len(dz_trad_table), 8)),
+                    column_config={
+                        "Контрагент": st.column_config.TextColumn("Контрагент"),
+                        "ДЗ": st.column_config.TextColumn("ДЗ"),
+                    },
+                )
+        _render_dz_counterparties_distribution(receivables_df)
+
+    if not tradition_df.empty:
+        rendered = True
+        st.markdown("### Традиция")
+        tradition_table = _build_tradition_table_with_dz(
+            tradition_df=tradition_df,
+            receivables_df=receivables_df,
+            category_order_df=category_order_df,
+        )
+        st.dataframe(
+            tradition_table,
+            use_container_width=True,
+            hide_index=True,
+            height=290,
+            column_config={
+                col: st.column_config.TextColumn(col)
+                for col in tradition_table.columns
+                if col != "Показатель"
+            },
+        )
+
+    if turnover_90_df is not None or turnover_7_df is not None:
+        rendered = True
+        st.markdown("### Оборачиваемость")
+        render_turnover_block(
+            dataframe=pd.DataFrame(),
+            categories_df=categories_df,
+            turnover_90_df=turnover_90_df,
+            turnover_7_df=turnover_7_df,
+            visible_rows=6,
+            category_order_df=category_order_df,
+        )
+
+    if hardware_levels_df is not None:
+        rendered = True
+        st.markdown("### Динамика продаж железа")
+        _render_hardware_sales_dynamics_panel(
+            hardware_levels_df,
+            table_height=_table_height_from_rows(6),
+        )
+
+    if cash_inflow_df is not None:
+        rendered = True
+        cash_total = _calc_cash_inflow_total_for_tradition(cash_inflow_df)
+        st.markdown("### Поступления ДС")
+        st.metric("Поступления ДС (Традиция)", _format_money(cash_total))
+
+    return rendered
+
+
 def render_global_rnp_inputs(default_excise_liquid: int = 0) -> None:
     """Поля «Актуальная неделя», «Акцизной жидкости шт.» и «Кол-во заказов» над блоками РНП."""
     st.markdown(
@@ -280,7 +549,7 @@ def render_global_rnp_inputs(default_excise_liquid: int = 0) -> None:
 
 
 def render_special_retail_dashboard(
-    sales_df: pd.DataFrame,
+    sales_df: pd.DataFrame | None,
     contractors_df: pd.DataFrame,
     categories_df: pd.DataFrame,
     category_order_df: pd.DataFrame | None = None,
@@ -291,23 +560,42 @@ def render_special_retail_dashboard(
     cash_inflow_df: pd.DataFrame | None = None,
     hardware_levels_df: pd.DataFrame | None = None,
 ) -> None:
-    merged_df, new_clients, unmatched_products = prepare_dataset(
-        sales_df=sales_df,
-        contractors_df=contractors_df,
-        categories_df=categories_df,
-        category_order_df=category_order_df,
-    )
-    spec_df = merged_df[
-        merged_df["Подразделение"].isin(SPECIAL_RETAIL_SUBDIVISIONS)
-    ]
-    tradition_df = merged_df[merged_df["Подразделение"] == "Традиция"]
+    has_sales = sales_df is not None and not sales_df.empty
+    new_clients: list[str] = []
+    unmatched_products: list[tuple[str, str, str]] = []
+    spec_df = pd.DataFrame()
+    tradition_df = pd.DataFrame()
     target_client_name = 'ООО "Айса"'
-    target_client_sales_df = _prepare_target_client_sales_df(
+    target_client_sales_df = pd.DataFrame()
+
+    if has_sales:
+        merged_df, new_clients, unmatched_products = prepare_dataset(
+            sales_df=sales_df,
+            contractors_df=contractors_df,
+            categories_df=categories_df,
+            category_order_df=category_order_df,
+        )
+        spec_df = merged_df[
+            merged_df["Подразделение"].isin(SPECIAL_RETAIL_SUBDIVISIONS)
+        ]
+        tradition_df = merged_df[merged_df["Подразделение"] == "Традиция"]
+        target_client_sales_df = _prepare_target_client_sales_df(
+            sales_df=sales_df,
+            categories_df=categories_df,
+            target_client=target_client_name,
+            category_order_df=category_order_df,
+        )
+
+    has_spec_retail = not spec_df.empty
+    loaded_files, missing_files = _describe_loaded_inputs(
         sales_df=sales_df,
-        categories_df=categories_df,
-        target_client=target_client_name,
-        category_order_df=category_order_df,
+        hardware_levels_df=hardware_levels_df,
+        turnover_90_df=turnover_90_df,
+        turnover_7_df=turnover_7_df,
+        receivables_df=receivables_df,
+        cash_inflow_df=cash_inflow_df,
     )
+    is_partial_report = not has_spec_retail
 
     if "show_rnp_block" not in st.session_state:
         st.session_state.show_rnp_block = False
@@ -316,13 +604,15 @@ def render_special_retail_dashboard(
     if "show_ai_rnp_block" not in st.session_state:
         st.session_state.show_ai_rnp_block = False
 
-    if spec_df.empty:
-        st.info("Нет данных по Спец. рознице.")
-        return
-
-    _excel_default_week = _client_block_default_week_from_spec(spec_df)
-    _excel_week_num = get_client_block_week_number(_excel_default_week)
-    excel_bytes = _build_full_report_excel(
+    _excel_default_week = (
+        _client_block_default_week_from_spec(spec_df) if has_spec_retail else None
+    )
+    _excel_week_num = (
+        get_client_block_week_number(_excel_default_week)
+        if _excel_default_week is not None
+        else None
+    )
+    excel_bytes = _build_report_excel(
         sales_df=sales_df,
         orders_df=orders_df,
         turnover_90_df=turnover_90_df,
@@ -334,84 +624,8 @@ def render_special_retail_dashboard(
         categories_fallback_df=categories_df,
         category_order_fallback_df=category_order_df,
     )
-    _excel_file_name = f"РНП Спец. розница и Традиция — неделя {_excel_week_num}.xlsx"
-    st.markdown(
-        """
-        <style>
-        div[data-testid="stButton"] button[kind="tertiary"] {
-            background-color: #0b2e6b !important;
-            color: #ffffff !important;
-            border: 1px solid #0b2e6b !important;
-            font-weight: 800 !important;
-            font-size: 1.05rem !important;
-            border-radius: 10px !important;
-            min-height: 44px !important;
-            padding: 0.5rem 1rem !important;
-            justify-content: flex-start !important;
-            text-align: left !important;
-        }
-        div[data-testid="stButton"] button[kind="tertiary"]:hover,
-        div[data-testid="stButton"] button[kind="tertiary"]:active,
-        div[data-testid="stButton"] button[kind="tertiary"]:focus,
-        div[data-testid="stButton"] button[kind="tertiary"]:focus-visible {
-            background-color: #082554 !important;
-            border-color: #082554 !important;
-            color: #ffffff !important;
-            box-shadow: none !important;
-            outline: none !important;
-        }
-        div[data-testid="stButton"] button[kind="secondary"] {
-            background-color: #1f5d35 !important;
-            color: #ffffff !important;
-            border: 1px solid #1f5d35 !important;
-            font-weight: 800 !important;
-            font-size: 1.05rem !important;
-            border-radius: 10px !important;
-            min-height: 44px !important;
-            padding: 0.5rem 1rem !important;
-            justify-content: flex-start !important;
-            text-align: left !important;
-        }
-        div[data-testid="stButton"] button[kind="secondary"]:hover {
-            background-color: #17472a !important;
-            border-color: #17472a !important;
-        }
-        .st-key-toggle_ai_rnp_block_btn button {
-            background-color: #b56a1a !important;
-            color: #ffffff !important;
-            border: 1px solid #b56a1a !important;
-            font-weight: 800 !important;
-            font-size: 1.05rem !important;
-            border-radius: 10px !important;
-            min-height: 44px !important;
-            padding: 0.5rem 1rem !important;
-            justify-content: flex-start !important;
-            text-align: left !important;
-        }
-        .st-key-toggle_ai_rnp_block_btn button:hover,
-        .st-key-toggle_ai_rnp_block_btn button:active,
-        .st-key-toggle_ai_rnp_block_btn button:focus,
-        .st-key-toggle_ai_rnp_block_btn button:focus-visible {
-            background-color: #955716 !important;
-            border-color: #955716 !important;
-            color: #ffffff !important;
-            box-shadow: none !important;
-            outline: none !important;
-        }
-        div[data-testid="stDownloadButton"] button {
-            background: transparent !important;
-            color: inherit !important;
-            border: 1px solid rgba(128, 128, 128, 0.4) !important;
-            font-weight: 700 !important;
-        }
-        div[data-testid="stDownloadButton"] button:hover {
-            background: rgba(128, 128, 128, 0.08) !important;
-            border-color: rgba(128, 128, 128, 0.65) !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    _inject_dashboard_styles()
+    _render_load_status_banner(loaded_files, missing_files)
 
     if new_clients and unmatched_products:
         st.info("🆕 Обнаружены новые клиенты и товары, распределите их в справочнике ниже.")
@@ -428,6 +642,31 @@ def render_special_retail_dashboard(
         receivables_df=receivables_df,
     )
     st.markdown("---")
+
+    if excel_bytes is not None and not has_spec_retail:
+        st.markdown("**Выгрузка в Excel**")
+        _render_download_excel_button(
+            excel_bytes,
+            is_partial=is_partial_report,
+            week_num=_excel_week_num,
+            key="download_excel_partial",
+        )
+        st.markdown("---")
+
+    if not has_spec_retail:
+        rendered = _render_standalone_report_sections(
+            receivables_df=receivables_df,
+            cash_inflow_df=cash_inflow_df,
+            turnover_90_df=turnover_90_df,
+            turnover_7_df=turnover_7_df,
+            hardware_levels_df=hardware_levels_df,
+            categories_df=categories_df,
+            category_order_df=category_order_df,
+            tradition_df=tradition_df,
+        )
+        if not rendered:
+            st.warning("Нет блоков для расчёта по загруженным файлам.")
+        return
 
     render_global_rnp_inputs()
     st.markdown("")
@@ -448,15 +687,12 @@ def render_special_retail_dashboard(
             st.session_state.show_rnp_block = not st.session_state.show_rnp_block
             st.rerun()
     with col_download:
-        if excel_bytes is not None:
-            st.download_button(
-                "Скачать РНП отчёт в Excel",
-                data=excel_bytes,
-                file_name=_excel_file_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="secondary",
-                use_container_width=True,
-            )
+        _render_download_excel_button(
+            excel_bytes,
+            is_partial=is_partial_report,
+            week_num=_excel_week_num,
+            key="download_excel_main",
+        )
 
     if st.session_state.show_rnp_block:
         st.markdown(
@@ -1355,17 +1591,21 @@ def _append_counterparty_to_dz_reference(ref_key: str, counterparty: str) -> tup
     return results[0] if results else (False, "Нет данных для добавления.")
 
 
-def _build_dz_spec_table(
+def _build_dz_table_by_reference(
     receivables_df: pd.DataFrame | None,
+    reference_key: str,
+    *,
+    missing_file_message: str,
+    bad_reference_message: str,
 ) -> tuple[pd.DataFrame, float, str | None]:
     try:
-        dz_ref_df = load_reference(REF_DZ_SPEC)
+        dz_ref_df = load_reference(reference_key)
     except Exception as exc:  # noqa: BLE001
         return pd.DataFrame(), 0.0, f"Не удалось прочитать справочник ДЗ: {exc}"
     if "Контрагент" not in dz_ref_df.columns:
-        return pd.DataFrame(), 0.0, "В справочнике ДЗ_Спец_розница нет столбца «Контрагент»."
+        return pd.DataFrame(), 0.0, bad_reference_message
     if receivables_df is None or receivables_df.empty:
-        return pd.DataFrame(), 0.0, "Загрузите файл «Дебиторская задолженность (62 счёт)»."
+        return pd.DataFrame(), 0.0, missing_file_message
     if receivables_df.shape[1] < 7:
         return pd.DataFrame(), 0.0, "В файле ДЗ недостаточно столбцов (ожидался 7-й столбец с ДЗ)."
 
@@ -1409,6 +1649,28 @@ def _build_dz_spec_table(
         }
     )
     return table, total_value, None
+
+
+def _build_dz_spec_table(
+    receivables_df: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, float, str | None]:
+    return _build_dz_table_by_reference(
+        receivables_df,
+        REF_DZ_SPEC,
+        missing_file_message="Загрузите файл «Дебиторская задолженность (62 счёт)».",
+        bad_reference_message="В справочнике ДЗ_Спец_розница нет столбца «Контрагент».",
+    )
+
+
+def _build_dz_trad_table(
+    receivables_df: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, float, str | None]:
+    return _build_dz_table_by_reference(
+        receivables_df,
+        REF_DZ_TRAD,
+        missing_file_message="Загрузите файл «Дебиторская задолженность (62 счёт)».",
+        bad_reference_message="В справочнике ДЗ_Традиция нет столбца «Контрагент».",
+    )
 
 
 def _build_tradition_table_with_dz(
@@ -2185,8 +2447,19 @@ def _build_hardware_dynamics_export_table(
     return table
 
 
-def _build_full_report_excel(
-    sales_df: pd.DataFrame,
+def _build_cash_inflow_export_table(
+    cash_inflow_df: pd.DataFrame | None,
+) -> pd.DataFrame:
+    if cash_inflow_df is None or cash_inflow_df.empty:
+        return pd.DataFrame()
+    total = _calc_cash_inflow_total_for_tradition(cash_inflow_df)
+    return pd.DataFrame(
+        [{"Показатель": "Поступления ДС (Традиция)", "Значение": _format_money(total)}]
+    )
+
+
+def _build_report_excel(
+    sales_df: pd.DataFrame | None,
     orders_df: pd.DataFrame | None,
     turnover_90_df: pd.DataFrame | None,
     turnover_7_df: pd.DataFrame | None,
@@ -2204,80 +2477,106 @@ def _build_full_report_excel(
         category_order_fallback_df if category_order_fallback_df is not None else pd.DataFrame(),
     )
 
-    merged_df, _, _ = prepare_dataset(
-        sales_df=sales_df,
-        contractors_df=contractors_df,
-        categories_df=categories_df,
-        category_order_df=category_order_df,
-    )
-    spec_df = merged_df[
-        merged_df["Подразделение"].isin(SPECIAL_RETAIL_SUBDIVISIONS)
-    ].copy()
-    tradition_df = merged_df[merged_df["Подразделение"] == "Традиция"].copy()
-    if spec_df.empty:
-        return None
+    spec_df = pd.DataFrame()
+    tradition_df = pd.DataFrame()
+    if sales_df is not None and not sales_df.empty:
+        merged_df, _, _ = prepare_dataset(
+            sales_df=sales_df,
+            contractors_df=contractors_df,
+            categories_df=categories_df,
+            category_order_df=category_order_df,
+        )
+        spec_df = merged_df[
+            merged_df["Подразделение"].isin(SPECIAL_RETAIL_SUBDIVISIONS)
+        ].copy()
+        tradition_df = merged_df[merged_df["Подразделение"] == "Традиция"].copy()
 
-    aggregates = {"Минская область": MINSK_REGION_COMPONENTS}
-    subdivisions = _collect_subdivisions_for_export(spec_df, aggregates)
-    spec_category_order = load_category_order_list(category_order_df, COL_SPEC_RNP)
+    sheets_to_write: list[tuple[str, pd.DataFrame | None]] = []
 
-    financial_overall = build_financial_metrics_vertical_table(
-        spec_df,
-        [],
-        include_overall=True,
-        aggregates=aggregates,
-        overall_margin_adjustment=get_excise_liquid_margin_deduction(),
-    )
-    _, dz_spec_total, _ = _build_dz_spec_table(receivables_df)
-    financial_overall = _append_dz_metric_row(financial_overall, dz_spec_total)
-    financial_subdiv = build_financial_metrics_vertical_table(
-        spec_df, subdivisions, include_overall=False, aggregates=aggregates
-    )
-    category_overall = build_category_vertical_table(
-        spec_df,
-        category_order=spec_category_order,
-        subdivisions=[],
-        include_overall=True,
-        aggregates=aggregates,
-    )
-    category_subdiv = build_category_vertical_table(
-        spec_df,
-        category_order=spec_category_order,
-        subdivisions=subdivisions,
-        include_overall=False,
-        aggregates=aggregates,
-        spacer_between_groups=True,
-    )
-    turnover_table = _build_turnover_export_table(
-        spec_df=spec_df,
-        categories_df=categories_df,
-        turnover_90_df=turnover_90_df,
-        turnover_7_df=turnover_7_df,
-        category_order_df=category_order_df,
-    )
-    factor_table = _build_factor_export_table(
-        spec_df, categories_df, category_order_df
-    )
-    orders_summary_table, orders_category_table = _build_orders_export_tables(
-        orders_df=orders_df,
-        contractors_df=contractors_df,
-        categories_df=categories_df,
-        allowed_subdivisions=set(spec_df["Подразделение"].dropna().astype(str)),
-        category_order_df=category_order_df,
-    )
-    dz_spec_table, _, _ = _build_dz_spec_table(receivables_df)
-    tradition_table = _build_tradition_export_table(
-        tradition_df=tradition_df,
-        receivables_df=receivables_df,
-        category_order_df=category_order_df,
-    )
-    hardware_dynamics_table = _build_hardware_dynamics_export_table(
-        hardware_levels_df
-    )
-    client_block_export = _build_client_block_export_table(spec_df)
+    if receivables_df is not None:
+        dz_spec_table, _, dz_spec_err = _build_dz_spec_table(receivables_df)
+        if not dz_spec_err:
+            sheets_to_write.append(("ДЗ Спец розница", dz_spec_table))
+        dz_trad_table, _, dz_trad_err = _build_dz_trad_table(receivables_df)
+        if not dz_trad_err:
+            sheets_to_write.append(("ДЗ Традиция", dz_trad_table))
 
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+    if hardware_levels_df is not None:
+        sheets_to_write.append(
+            ("Динамика железа", _build_hardware_dynamics_export_table(hardware_levels_df))
+        )
+
+    if (turnover_90_df is not None or turnover_7_df is not None) and spec_df.empty:
+        turnover_table = _build_turnover_export_table(
+            spec_df=spec_df,
+            categories_df=categories_df,
+            turnover_90_df=turnover_90_df,
+            turnover_7_df=turnover_7_df,
+            category_order_df=category_order_df,
+        )
+        sheets_to_write.append(("Оборачиваемость", turnover_table))
+
+    cash_inflow_table = _build_cash_inflow_export_table(cash_inflow_df)
+    if _has_export_data(cash_inflow_table):
+        sheets_to_write.append(("Поступления ДС", cash_inflow_table))
+
+    client_block_export = pd.DataFrame()
+    if not spec_df.empty:
+        aggregates = {"Минская область": MINSK_REGION_COMPONENTS}
+        subdivisions = _collect_subdivisions_for_export(spec_df, aggregates)
+        spec_category_order = load_category_order_list(category_order_df, COL_SPEC_RNP)
+
+        financial_overall = build_financial_metrics_vertical_table(
+            spec_df,
+            [],
+            include_overall=True,
+            aggregates=aggregates,
+            overall_margin_adjustment=get_excise_liquid_margin_deduction(),
+        )
+        _, dz_spec_total, _ = _build_dz_spec_table(receivables_df)
+        financial_overall = _append_dz_metric_row(financial_overall, dz_spec_total)
+        financial_subdiv = build_financial_metrics_vertical_table(
+            spec_df, subdivisions, include_overall=False, aggregates=aggregates
+        )
+        category_overall = build_category_vertical_table(
+            spec_df,
+            category_order=spec_category_order,
+            subdivisions=[],
+            include_overall=True,
+            aggregates=aggregates,
+        )
+        category_subdiv = build_category_vertical_table(
+            spec_df,
+            category_order=spec_category_order,
+            subdivisions=subdivisions,
+            include_overall=False,
+            aggregates=aggregates,
+            spacer_between_groups=True,
+        )
+        turnover_table = _build_turnover_export_table(
+            spec_df=spec_df,
+            categories_df=categories_df,
+            turnover_90_df=turnover_90_df,
+            turnover_7_df=turnover_7_df,
+            category_order_df=category_order_df,
+        )
+        factor_table = _build_factor_export_table(
+            spec_df, categories_df, category_order_df
+        )
+        orders_summary_table, orders_category_table = _build_orders_export_tables(
+            orders_df=orders_df,
+            contractors_df=contractors_df,
+            categories_df=categories_df,
+            allowed_subdivisions=set(spec_df["Подразделение"].dropna().astype(str)),
+            category_order_df=category_order_df,
+        )
+        tradition_table = _build_tradition_export_table(
+            tradition_df=tradition_df,
+            receivables_df=receivables_df,
+            category_order_df=category_order_df,
+        )
+        client_block_export = _build_client_block_export_table(spec_df)
+
         finance_sheet = _stack_tables_with_titles(
             [
                 ("Финансы — Общие", financial_overall),
@@ -2297,16 +2596,26 @@ def _build_full_report_excel(
                 ("Заказы — Категории", orders_category_table),
             ]
         )
-        sheets_to_write = [
-            ("Финансы", finance_sheet),
-            ("Категории_Оборач.", categories_turnover_sheet),
-            ("ДЗ Спец розница", dz_spec_table),
-            ("Факторный анализ", factor_table),
-            ("Традиция", tradition_table),
-            ("Динамика железа", hardware_dynamics_table),
-        ]
+        sheets_to_write.extend(
+            [
+                ("Финансы", finance_sheet),
+                ("Категории_Оборач.", categories_turnover_sheet),
+                ("Факторный анализ", factor_table),
+                ("Традиция", tradition_table),
+            ]
+        )
         if _has_export_data(orders_sheet):
             sheets_to_write.append(("Заказы", orders_sheet))
+    elif not tradition_df.empty:
+        tradition_table = _build_tradition_export_table(
+            tradition_df=tradition_df,
+            receivables_df=receivables_df,
+            category_order_df=category_order_df,
+        )
+        sheets_to_write.append(("Традиция", tradition_table))
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
         written_count = 0
         for sheet_name, sheet_df in sheets_to_write:
             if sheet_name == "Динамика железа":
@@ -2324,10 +2633,36 @@ def _build_full_report_excel(
         if written_count:
             _autosize_columns(writer)
         else:
-            _write_sheet(writer, "Отчёт", pd.DataFrame([{"Статус": "Нет данных для выгрузки"}]))
-            _autosize_columns(writer)
+            return None
 
     return output.getvalue()
+
+
+def _build_full_report_excel(
+    sales_df: pd.DataFrame,
+    orders_df: pd.DataFrame | None,
+    turnover_90_df: pd.DataFrame | None,
+    turnover_7_df: pd.DataFrame | None,
+    receivables_df: pd.DataFrame | None,
+    cash_inflow_df: pd.DataFrame | None,
+    contractors_fallback_df: pd.DataFrame,
+    categories_fallback_df: pd.DataFrame,
+    category_order_fallback_df: pd.DataFrame | None = None,
+    hardware_levels_df: pd.DataFrame | None = None,
+) -> bytes | None:
+    """Обратная совместимость: полный отчёт при наличии продаж."""
+    return _build_report_excel(
+        sales_df=sales_df,
+        orders_df=orders_df,
+        turnover_90_df=turnover_90_df,
+        turnover_7_df=turnover_7_df,
+        receivables_df=receivables_df,
+        cash_inflow_df=cash_inflow_df,
+        contractors_fallback_df=contractors_fallback_df,
+        categories_fallback_df=categories_fallback_df,
+        category_order_fallback_df=category_order_fallback_df,
+        hardware_levels_df=hardware_levels_df,
+    )
 
 
 def _build_orders_export_tables(

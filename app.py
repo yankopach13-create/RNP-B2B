@@ -430,9 +430,19 @@ def main() -> None:
     ):
         return
 
-    # Проверяем базовые файлы для построения основного отчёта
-    if sales_df is None:
-        st.warning("⚠️ Без файла «Продажи» основной отчёт недоступен.")
+    has_any_data = any(
+        df is not None
+        for df in (
+            sales_df,
+            hardware_levels_df,
+            turnover_90_df,
+            turnover_7_df,
+            receivables_df,
+            cash_inflow_df,
+        )
+    )
+    if not has_any_data:
+        st.warning("Загрузите хотя бы один файл и нажмите «Загрузить данные».")
         return
 
     if contractors_df.empty or "Контрагент" not in contractors_df.columns:
@@ -455,7 +465,7 @@ def main() -> None:
 
     st.markdown("---")
     render_special_retail_dashboard(
-        sales_df=sales_df,
+        sales_df=sales_df,  # может быть None — тогда строится частичный отчёт
         contractors_df=contractors_df,
         categories_df=categories_df,
         category_order_df=category_order_df,
