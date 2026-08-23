@@ -18,6 +18,7 @@ from features.data_prep import (
     _build_categories_map,
     _normalise_category_name,
     _normalise_product_columns,
+    _rename_product_level_columns,
 )
 
 RTRADE_CLIENTS = {
@@ -157,7 +158,8 @@ def _merge_categories(
     categories_df: pd.DataFrame,
     category_order_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    sales_prep = _normalise_product_columns(sales_df.copy())
+    sales_prep = _rename_product_level_columns(sales_df.copy())
+    sales_prep = _normalise_product_columns(sales_prep)
     known_categories = collect_known_category_names(
         categories_df, category_order_df
     )

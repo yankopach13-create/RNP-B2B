@@ -282,17 +282,17 @@ def render_new_products(unmatched_products: list[tuple[str, str, str]]) -> None:
     """Выводит товары, которые не найдены в справочнике категорий."""
     if not unmatched_products:
         return
-    
-    # Format products as "Товар ур.1 / Товар ур.2 / Товар ур.3"
+
+    # Format products as "Товар ур.2 / Товар ур.3 / Товар ур.4"
     formatted_products = []
-    for prod1, prod2, prod3 in unmatched_products:
-        parts = [p for p in [prod1, prod2, prod3] if p and p != "__NONE__"]
+    for prod2, prod3, prod4 in unmatched_products:
+        parts = [p for p in [prod2, prod3, prod4] if p and p != "__NONE__"]
         if parts:
             formatted_products.append(" / ".join(parts))
-    
+
     if not formatted_products:
         return
-    
+
     styled = ", ".join(sorted(formatted_products))
     st.warning(
         f"Товары, не найденные в справочнике категорий: {styled}", icon="📦"

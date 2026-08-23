@@ -273,7 +273,7 @@ def _render_standalone_report_sections(
     cash_inflow_df: pd.DataFrame | None,
     turnover_90_df: pd.DataFrame | None,
     turnover_7_df: pd.DataFrame | None,
-    hardware_levels_df: pd.DataFrame | None,
+    sales_with_categories_df: pd.DataFrame | None,
     categories_df: pd.DataFrame,
     category_order_df: pd.DataFrame | None,
     tradition_df: pd.DataFrame,
@@ -369,11 +369,11 @@ def _render_standalone_report_sections(
             category_order_df=category_order_df,
         )
 
-    if hardware_levels_df is not None:
+    if sales_with_categories_df is not None and not sales_with_categories_df.empty:
         rendered = True
         st.markdown("### Динамика продаж железа")
         _render_hardware_sales_dynamics_panel(
-            hardware_levels_df,
+            sales_with_categories_df,
             table_height=_table_height_from_rows(6),
         )
 
@@ -515,13 +515,13 @@ def render_special_retail_dashboard(
     turnover_7_df: pd.DataFrame | None = None,
     receivables_df: pd.DataFrame | None = None,
     cash_inflow_df: pd.DataFrame | None = None,
-    hardware_levels_df: pd.DataFrame | None = None,
 ) -> None:
     has_sales = sales_df is not None and not sales_df.empty
     new_clients: list[str] = []
     unmatched_products: list[tuple[str, str, str]] = []
     spec_df = pd.DataFrame()
     tradition_df = pd.DataFrame()
+    merged_df = pd.DataFrame()
     target_client_name = 'ООО "Айса"'
     target_client_sales_df = pd.DataFrame()
 
@@ -568,7 +568,6 @@ def render_special_retail_dashboard(
         turnover_7_df=turnover_7_df,
         receivables_df=receivables_df,
         cash_inflow_df=cash_inflow_df,
-        hardware_levels_df=hardware_levels_df,
         contractors_fallback_df=contractors_df,
         categories_fallback_df=categories_df,
         category_order_fallback_df=category_order_df,
@@ -607,7 +606,7 @@ def render_special_retail_dashboard(
             cash_inflow_df=cash_inflow_df,
             turnover_90_df=turnover_90_df,
             turnover_7_df=turnover_7_df,
-            hardware_levels_df=hardware_levels_df,
+            sales_with_categories_df=merged_df if has_sales else None,
             categories_df=categories_df,
             category_order_df=category_order_df,
             tradition_df=tradition_df,
@@ -739,7 +738,7 @@ def render_special_retail_dashboard(
         col_hardware, col_ref_log = st.columns([1.05, 1], gap="medium")
         with col_hardware:
             _render_hardware_sales_dynamics_panel(
-                hardware_levels_df,
+                merged_df,
                 table_height=_panel_height,
             )
         with col_ref_log:
@@ -870,7 +869,7 @@ def render_special_retail_dashboard(
 
 
 def _render_hardware_sales_dynamics_panel(
-    hardware_levels_df: pd.DataFrame | None,
+    sales_with_categories_df: pd.DataFrame | None,
     table_height: int,
 ) -> None:
     """Таблица «Динамика продаж под-систем и расходников»."""
@@ -899,17 +898,17 @@ def _render_hardware_sales_dynamics_panel(
     try:
         hardware_result = build_hardware_sales_result(
             reference_df=cartridge_ref_df,
-            levels_df=hardware_levels_df,
+            sales_df=sales_with_categories_df,
         )
     except ValueError as exc:
         st.error(str(exc))
         hardware_result = build_hardware_sales_result(
             reference_df=cartridge_ref_df,
-            levels_df=None,
+            sales_df=None,
         )
 
     candidates = hardware_result.candidates_for_reference
-    if candidates and hardware_levels_df is not None:
+    if candidates and sales_with_categories_df is not None:
         with st.expander(
             f"Новые товары для справочника ({len(candidates)})",
             expanded=True,
@@ -1141,10 +1140,10 @@ def _render_quick_reference_update(
                 c1, c2 = st.columns([1.2, 1], gap="small")
                 c1.markdown("**Категория**")
                 c2.markdown("**Разрез (необязательно)**")
-            for idx, (prod1, prod2, prod3) in enumerate(unmatched_products):
+            for idx, (prod2, prod3, prod4) in enumerate(unmatched_products):
                 product_col, controls_col = st.columns([1, 1.8], gap="small")
                 title = " / ".join(
-                    [p for p in [prod1, prod2, prod3] if p and p != "__NONE__"]
+                    [p for p in [prod2, prod3, prod4] if p and p != "__NONE__"]
                 )
                 with product_col:
                     st.markdown(f"`{title}`")
@@ -1257,9 +1256,9 @@ def _render_quick_reference_update(
             if ok:
                 references_changed = True
                 products_added += 1
-                p1, p2, p3 = product_levels
+                p2, p3, p4 = product_levels
                 product_title = " / ".join(
-                    [p for p in (p1, p2, p3) if p and p != "__NONE__"]
+                    [p for p in (p2, p3, p4) if p and p != "__NONE__"]
                 )
                 dist_parts = [f"Категория: {selected_category}"]
                 if str(selected_razrez).strip():
@@ -2366,7 +2365,7 @@ def _read_latest_reference(ref_key: str, fallback_df: pd.DataFrame) -> pd.DataFr
 
 
 def _build_hardware_dynamics_export_table(
-    hardware_levels_df: pd.DataFrame | None,
+    sales_with_categories_df: pd.DataFrame | None,
 ) -> pd.DataFrame:
     """Таблица «Динамика продаж под-систем и расходников» для Excel."""
     try:
@@ -2377,12 +2376,12 @@ def _build_hardware_dynamics_export_table(
     try:
         hardware_result = build_hardware_sales_result(
             reference_df=cartridge_ref_df,
-            levels_df=hardware_levels_df,
+            sales_df=sales_with_categories_df,
         )
     except ValueError:
         hardware_result = build_hardware_sales_result(
             reference_df=cartridge_ref_df,
-            levels_df=None,
+            sales_df=None,
         )
 
     table = hardware_result.table.copy()
@@ -2416,7 +2415,6 @@ def _build_report_excel(
     contractors_fallback_df: pd.DataFrame,
     categories_fallback_df: pd.DataFrame,
     category_order_fallback_df: pd.DataFrame | None = None,
-    hardware_levels_df: pd.DataFrame | None = None,
 ) -> bytes | None:
     contractors_df = _read_latest_reference(REF_CONTRACTORS, contractors_fallback_df)
     categories_df = _read_latest_reference(REF_CATEGORIES, categories_fallback_df)
@@ -2427,6 +2425,7 @@ def _build_report_excel(
 
     spec_df = pd.DataFrame()
     tradition_df = pd.DataFrame()
+    merged_df = pd.DataFrame()
     if sales_df is not None and not sales_df.empty:
         merged_df, _, _ = prepare_dataset(
             sales_df=sales_df,
@@ -2449,9 +2448,9 @@ def _build_report_excel(
         if not dz_trad_err:
             sheets_to_write.append(("ДЗ Традиция", dz_trad_table))
 
-    if hardware_levels_df is not None:
+    if not merged_df.empty:
         sheets_to_write.append(
-            ("Динамика железа", _build_hardware_dynamics_export_table(hardware_levels_df))
+            ("Динамика железа", _build_hardware_dynamics_export_table(merged_df))
         )
 
     if (turnover_90_df is not None or turnover_7_df is not None) and spec_df.empty:
@@ -2596,7 +2595,6 @@ def _build_full_report_excel(
     contractors_fallback_df: pd.DataFrame,
     categories_fallback_df: pd.DataFrame,
     category_order_fallback_df: pd.DataFrame | None = None,
-    hardware_levels_df: pd.DataFrame | None = None,
 ) -> bytes | None:
     """Обратная совместимость: полный отчёт при наличии продаж."""
     return _build_report_excel(
@@ -2609,7 +2607,6 @@ def _build_full_report_excel(
         contractors_fallback_df=contractors_fallback_df,
         categories_fallback_df=categories_fallback_df,
         category_order_fallback_df=category_order_fallback_df,
-        hardware_levels_df=hardware_levels_df,
     )
 
 

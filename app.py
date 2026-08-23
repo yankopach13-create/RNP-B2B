@@ -105,16 +105,8 @@ def main() -> None:
             "Зайдите к Qlik под профилем User2.<br>"
             'В анализе продаж перейдите в закладку "АВТОМАТИЗАЦИЯ РНП B2B (Спец.розница/Традиция)".<br><br><br>'
             "Отберите необходимую неделю и скачайте отчёт без форматирования (не нажимайте галочку при скачивании).<br>"
+            'В файле должны быть столбцы Товар ур.2, Товар ур.3, Товар ур.4.<br>'
             'Вставьте скачанный документ в контейнер "Продажи".'
-        )
-        _HARDWARE_LEVELS_HELP_CAPTION = (
-            "Зайдите к Qlik под профилем User2.<br>"
-            'В анализе продаж перейдите в закладку '
-            '"АВТОМАТИЗАЦИЯ B2B "Динамика продаж железа"".<br><br><br>'
-            "Отберите необходимую неделю и скачайте отчёт без форматирования "
-            "(не нажимайте галочку при скачивании).<br>"
-            'Вставьте скачанный документ в контейнер '
-            '"Продажи железа (ур.3 / ур.4)".'
         )
         title_col, help_col = st.columns([0.82, 0.18], gap="small")
         with title_col:
@@ -122,24 +114,15 @@ def main() -> None:
         with help_col:
             st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
             render_custom_help_popover(
-                popover_key="sales-and-hardware",
+                popover_key="sales-uploader",
                 caption=_SALES_HELP_CAPTION,
                 image_name="sales.png",
-                second_image_name="Dynamic.png",
-                second_caption=_HARDWARE_LEVELS_HELP_CAPTION,
                 align="left",
-                two_column_layout=True,
-                compact_images=True,
             )
         sales_file = st.file_uploader(
             "Продажи",
             type=["xlsx", "xls"],
             key="sales_uploader",
-        )
-        hardware_levels_file = st.file_uploader(
-            "Продажи железа (ур.3 / ур.4)",
-            type=["xlsx", "xls"],
-            key="hardware_levels_uploader",
         )
 
     # Столбец 3: Оборачиваемость
@@ -372,13 +355,6 @@ def main() -> None:
             box-shadow: none !important;
             outline: none !important;
         }
-        .st-key-hardware_levels_uploader [data-testid="stFileUploaderDropzone"] {
-            padding: 0.35rem 0.55rem;
-            min-height: 2.35rem;
-        }
-        .st-key-hardware_levels_uploader [data-testid="stFileUploaderDropzone"] div {
-            font-size: 0.82rem;
-        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -407,9 +383,6 @@ def main() -> None:
         st.error(f"Не удалось загрузить справочники из {source}: {exc}")
         return
     sales_df = _read_excel(sales_file, "Продажи")
-    hardware_levels_df = _read_excel(
-        hardware_levels_file, "Продажи железа (ур.3 / ур.4)"
-    )
     orders_df = None
     turnover_90_df = _read_excel(turnover_90_file, "Оборачиваемость 90 дней")
     turnover_7_df = _read_excel(turnover_7_file, "Оборачиваемость 7 дней")
@@ -421,7 +394,6 @@ def main() -> None:
         df is None and uploaded_file is not None
         for df, uploaded_file in (
             (sales_df, sales_file),
-            (hardware_levels_df, hardware_levels_file),
             (turnover_90_df, turnover_90_file),
             (turnover_7_df, turnover_7_file),
             (receivables_df, receivables_file),
@@ -434,7 +406,6 @@ def main() -> None:
         df is not None
         for df in (
             sales_df,
-            hardware_levels_df,
             turnover_90_df,
             turnover_7_df,
             receivables_df,
@@ -474,7 +445,6 @@ def main() -> None:
         turnover_7_df=turnover_7_df,
         receivables_df=receivables_df,
         cash_inflow_df=cash_inflow_df,
-        hardware_levels_df=hardware_levels_df,
     )
 
 

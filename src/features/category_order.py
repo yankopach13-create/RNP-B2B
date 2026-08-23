@@ -275,25 +275,6 @@ def resolve_turnover_match_mode(
     return "category"
 
 
-def _is_coal_product_mask(df: pd.DataFrame) -> pd.Series:
-    """Маска строк с углём по названию товара (как в data_prep для продаж)."""
-    if df.empty:
-        return pd.Series(dtype=bool)
-
-    product_cols = [col for col in ("Товар ур.1", "Товар ур.2", "Товар ур.3") if col in df.columns]
-    if not product_cols:
-        return pd.Series(False, index=df.index)
-
-    return df[product_cols].astype(str).apply(
-        lambda series: series.str.contains("Уголь", case=False, na=False)
-    ).any(axis=1)
-
-
-def _razrez_label_implies_coal(label: str) -> bool:
-    patterns = _razrez_match_patterns(normalize_razrez_value(label))
-    return any("уголь" in pattern for pattern in patterns)
-
-
 def _razrez_label_implies_bks_tks(label: str) -> bool:
     patterns = _razrez_match_patterns(normalize_razrez_value(label))
     return any(pattern in ("бкс", "ткс") or "бкс" in pattern or "ткс" in pattern for pattern in patterns)
@@ -308,8 +289,7 @@ def _match_turnover_by_razrez(df: pd.DataFrame, label: str) -> pd.Series:
     razrez = _razrez_series(df)
     mask = _razrez_matches_series(razrez, normalize_razrez_value(label))
 
-    if _razrez_label_implies_coal(label):
-        mask = mask | _is_coal_product_mask(df)
+    # Только сверка со справочником (Разрез), без эвристик по названию товара.
     if _razrez_label_implies_bks_tks(label):
         mask = mask | _is_bks_tks_mask(df)
     return mask
@@ -528,15 +508,19 @@ def sum_hookah_products_in_parent(
     parent_label: str,
     value_column: str = "Количество",
 ) -> float:
-    """Сумма кальянной продукции (Товар ур.1) внутри указанной категории."""
-    if df.empty or value_column not in df.columns or "Товар ур.1" not in df.columns:
+    """Сумма категории «Кальянная продукция» (если она совпадает с parent) или 0.
+
+    Раньше фильтровали по Товар ур.1; теперь кальян — отдельная категория в справочнике,
+    поэтому для parent «Прочие» возвращаем 0 (вычитание не нужно).
+    """
+    if df.empty or value_column not in df.columns:
+        return 0.0
+    parent_key = _label_key(parent_label)
+    if "кальян" not in parent_key:
         return 0.0
     values = pd.to_numeric(df[value_column], errors="coerce").fillna(0.0)
     categories = _category_series(df).map(_label_key)
-    parent_key = _label_key(parent_label)
-    level1 = df["Товар ур.1"].fillna("").astype(str).str.strip().str.casefold()
-    mask = categories.eq(parent_key) & level1.eq("1.1 кальянная продукция")
-    return float(values.loc[mask].sum())
+    return float(values.loc[categories.eq(parent_key)].sum())
 
 
 def _is_bks_tks_mask(df: pd.DataFrame) -> pd.Series:
@@ -562,15 +546,13 @@ def sum_bks_tks_in_hookah_in_parent(
     parent_label: str,
     value_column: str = "Количество",
 ) -> float:
-    """Сумма БКС/ТКС внутри кальянной продукции указанной категории."""
-    if df.empty or value_column not in df.columns or "Товар ур.1" not in df.columns:
+    """Сумма БКС/ТКС внутри указанной родительской категории."""
+    if df.empty or value_column not in df.columns:
         return 0.0
     values = pd.to_numeric(df[value_column], errors="coerce").fillna(0.0)
     categories = _category_series(df).map(_label_key)
     parent_key = _label_key(parent_label)
-    level1 = df["Товар ур.1"].fillna("").astype(str).str.strip().str.casefold()
-    hookah_mask = categories.eq(parent_key) & level1.eq("1.1 кальянная продукция")
-    mask = hookah_mask & _is_bks_tks_mask(df)
+    mask = categories.eq(parent_key) & _is_bks_tks_mask(df)
     return float(values.loc[mask].sum())
 
 
@@ -579,7 +561,10 @@ def calc_ai_misc_breakdown(
     category_order: list[str],
     value_column: str = "Количество",
 ) -> tuple[float, float, float, float]:
-    """Возвращает (картриджи, бкс/ткс в кальяне, прочие итого, вся категория) для ИИ-отчёта."""
+    """Возвращает (картриджи, бкс/ткс, прочие итого, вся категория) для ИИ-отчёта.
+
+    Кальянная продукция — отдельная категория в справочнике, из «Прочих» не вычитаем.
+    """
     misc_label = find_category_label_by_fragment(category_order, "прочие товары")
     if misc_label is None:
         return 0.0, 0.0, 0.0, 0.0
@@ -588,10 +573,8 @@ def calc_ai_misc_breakdown(
     cartridges = sum_razrez_in_parent(
         df, misc_label, "картридж", value_column=value_column
     )
-    hookah = sum_hookah_products_in_parent(df, misc_label, value_column=value_column)
     bks = sum_bks_tks_in_hookah_in_parent(df, misc_label, value_column=value_column)
-    # БКС/ТКС остаются в «Прочих товарах», остальная кальянная продукция вычитается.
-    misc_net = misc_total - cartridges - hookah + bks
+    misc_net = misc_total - cartridges
     return cartridges, bks, misc_net, misc_total
 
 

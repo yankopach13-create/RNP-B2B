@@ -17,20 +17,8 @@ from features.data_prep import (
     _build_categories_map,
     _normalise_product_columns,
     _normalise_category_name,
+    _rename_product_level_columns,
 )
-
-
-def _enrich_turnover_razrez(df: pd.DataFrame) -> pd.DataFrame:
-    """Подставляет разрез «уголь» для кальянного угля без разреза в справочнике."""
-    product_cols = [col for col in PRODUCT_COLUMNS if col in df.columns]
-    if not product_cols:
-        return df
-
-    mask_hookah_coal = df[product_cols].astype(str).apply(
-        lambda series: series.str.contains("Уголь", case=False, na=False)
-    ).any(axis=1)
-    df.loc[mask_hookah_coal & df["Разрез"].eq(""), "Разрез"] = "уголь"
-    return df
 
 
 def _collect_turnover_razrez_keys(
@@ -64,15 +52,7 @@ def calculate_turnover_by_category(
         return None
 
     df = turnover_df.copy()
-    rename_map = {
-        "Товар1": "Товар ур.1",
-        "Товар 1": "Товар ур.1",
-        "Товар2": "Товар ур.2",
-        "Товар 2": "Товар ур.2",
-        "Товар3": "Товар ур.3",
-        "Товар 3": "Товар ур.3",
-    }
-    df = df.rename(columns=rename_map)
+    df = _rename_product_level_columns(df)
 
     product_cols_present = [col for col in PRODUCT_COLUMNS if col in df.columns]
     if not product_cols_present:
@@ -94,15 +74,14 @@ def calculate_turnover_by_category(
     )
 
     df = df.merge(
-        categories_map[product_cols_present + ["Категория агрег.", "Разрез"]],
+        categories_map[PRODUCT_COLUMNS + ["Категория агрег.", "Разрез"]].drop_duplicates(),
         how="left",
-        on=product_cols_present,
+        on=PRODUCT_COLUMNS,
     )
     df["Категория агрег."] = df["Категория агрег."].apply(
         lambda name: _normalise_category_name(name, known_categories)
     )
     df["Разрез"] = df["Разрез"].fillna("").astype(str).map(normalize_razrez_value)
-    df = _enrich_turnover_razrez(df)
 
     if (
         "Остаток сред.дн. (Q)" not in df.columns

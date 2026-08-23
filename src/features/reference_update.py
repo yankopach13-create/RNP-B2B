@@ -15,6 +15,7 @@ from features.category_order import (
     get_category_source_column,
     get_razrez_source_column,
 )
+from features.data_prep import _normalize_level4_value
 
 
 def _prepare_contractors_df(df: pd.DataFrame) -> tuple[pd.DataFrame | None, str | None]:
@@ -29,7 +30,7 @@ def _prepare_categories_df(df: pd.DataFrame) -> tuple[pd.DataFrame | None, str |
     cat_col = get_category_source_column(df)
     if cat_col is None:
         return None, "В справочнике категорий нет столбца «Категория»."
-    required = ["Товар ур.1", "Товар ур.2", "Товар ур.3"]
+    required = ["Товар ур.2", "Товар ур.3", "Товар ур.4"]
     missing = [col for col in required if col not in df.columns]
     if missing:
         return None, f"В справочнике категорий нет столбцов: {', '.join(missing)}."
@@ -166,45 +167,48 @@ def batch_add_products_to_reference(
     rows_to_append: list[dict[str, object]] = []
     existing_keys = set(
         (
-            df["Товар ур.1"].fillna("").astype(str).str.strip().str.lower()
-            + "|||"
-            + df["Товар ур.2"].fillna("").astype(str).str.strip().str.lower()
+            df["Товар ур.2"].fillna("").astype(str).str.strip().str.lower()
             + "|||"
             + df["Товар ур.3"].fillna("").astype(str).str.strip().str.lower()
+            + "|||"
+            + df["Товар ур.4"].map(_normalize_level4_value).str.lower()
         ).tolist()
     )
 
     for product_levels, category, razrez in items:
-        p1, p2, p3 = (
+        p2, p3, p4 = (
             str(product_levels[0]).strip(),
             str(product_levels[1]).strip(),
-            str(product_levels[2]).strip(),
+            _normalize_level4_value(product_levels[2]),
         )
         category_value = str(category).strip()
         razrez_value = str(razrez).strip()
 
         if not category_value:
             results.append(
-                (False, f"Для товара «{p1} / {p2} / {p3}» не выбрана категория.")
+                (False, f"Для товара «{p2} / {p3} / {p4}» не выбрана категория.")
             )
             continue
 
-        new_key = f"{p1.lower()}|||{p2.lower()}|||{p3.lower()}"
+        new_key = f"{p2.lower()}|||{p3.lower()}|||{p4.lower()}"
         if new_key in existing_keys:
             results.append(
-                (False, f"Товар «{p1} / {p2} / {p3}» уже есть в справочнике.")
+                (False, f"Товар «{p2} / {p3} / {p4}» уже есть в справочнике.")
             )
             continue
 
         new_row: dict[str, object] = {col: "" for col in df.columns}
-        new_row["Товар ур.1"] = p1
         new_row["Товар ур.2"] = p2
         new_row["Товар ур.3"] = p3
+        new_row["Товар ур.4"] = p4
+        # Не пишем ур.1, если столбца уже нет; если есть — оставляем пустым
+        if "Товар ур.1" in new_row:
+            new_row["Товар ур.1"] = ""
         new_row[cat_col] = category_value
         new_row[razrez_col] = razrez_value
         rows_to_append.append(new_row)
         existing_keys.add(new_key)
-        results.append((True, f"Добавлен товар «{p1} / {p2} / {p3}»."))
+        results.append((True, f"Добавлен товар «{p2} / {p3} / {p4}»."))
 
     if rows_to_append:
         try:
