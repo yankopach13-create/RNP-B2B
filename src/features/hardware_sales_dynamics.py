@@ -1,9 +1,9 @@
 """Динамика продаж pod-систем и расходников (железо B2B).
 
-Логика количества совпадает с блоком категорий РНП:
-- поды = сумма строк с «Категория агрег.» = Pod-системы;
-- расходники = сумма строк с «Категория агрег.» = Расходники.
-Справочник Sales_pod_cartridge задаёт только состав/порядок строк разбивки.
+Простая сверка со справочником Sales_pod_cartridge:
+- поды → сумма «Количество» по совпадению с Товар ур.3;
+- расходники → сумма по совпадению с Товар ур.4 (если пусто/«-» — по ур.3);
+- порядок строк — как в справочнике.
 """
 
 from __future__ import annotations
@@ -22,14 +22,11 @@ LEVEL2_COLUMN = "Товар ур.2"
 LEVEL3_COLUMN = "Товар ур.3"
 LEVEL4_COLUMN = "Товар ур.4"
 QUANTITY_COLUMN = "Количество"
-CATEGORY_COLUMN = "Категория агрег."
 REFERENCE_PRODUCT_COLUMN = "Товар"
 REFERENCE_CATEGORY_COLUMN = "Категория"
 CATEGORY_PODS_LABEL = "Поды"
 CATEGORY_CONSUMABLES_LABEL = "Расходники"
 HARDWARE_CATEGORY_OPTIONS = (CATEGORY_PODS_LABEL, CATEGORY_CONSUMABLES_LABEL)
-UNNAMED_PODS_LABEL = "Прочие поды (без ур.3)"
-UNNAMED_CONSUMABLES_LABEL = "Прочие расходники (без имени)"
 
 LEVEL2_ALIASES = (
     "Товар ур.2",
@@ -60,7 +57,7 @@ QUANTITY_ALIASES = (
 @dataclass(frozen=True)
 class ReferenceProduct:
     name: str
-    level: int  # 3 = под, 4 = расходник
+    level: int  # 3 = под (ур.3), 4 = расходник (ур.4)
 
 
 @dataclass
@@ -99,7 +96,6 @@ def _display_product_name(value: object) -> str:
 
 
 def _infer_reference_product_level(name: str) -> int:
-    """Поды/стартовые комплекты — ур.3, остальное — расходники (ур.4)."""
     lower = _display_product_name(name).casefold()
     if (
         lower.startswith("под-система")
@@ -144,29 +140,10 @@ def _find_column(df: pd.DataFrame, aliases: tuple[str, ...]) -> str | None:
     return None
 
 
-def _is_pod_category(category: object) -> bool:
-    """Совпадает с категорией РНП «Pod-системы» (не путать с прочими pod-метками)."""
-    text = _display_product_name(category).casefold()
-    if not text:
-        return False
-    return "pod-систем" in text or "pod систем" in text
-
-
-def _is_consumable_category(category: object) -> bool:
-    """Только «Расходники» РНП — без «Картриджи с жидкостью»."""
-    text = _display_product_name(category).casefold()
-    if not text:
-        return False
-    return "расходник" in text
-
-
 def _normalize_sales_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Приводит загруженные продажи к единой структуре для блока железа."""
+    """Приводит продажи к ур.3 / ур.4 / Количество (+ категория, если есть)."""
     prepared = _rename_product_level_columns(df.copy())
 
-    level2_col = _find_column(prepared, LEVEL2_ALIASES) or (
-        LEVEL2_COLUMN if LEVEL2_COLUMN in prepared.columns else None
-    )
     level3_col = _find_column(prepared, LEVEL3_ALIASES) or (
         LEVEL3_COLUMN if LEVEL3_COLUMN in prepared.columns else None
     )
@@ -176,8 +153,6 @@ def _normalize_sales_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     quantity_col = _find_column(prepared, QUANTITY_ALIASES)
 
     missing: list[str] = []
-    if level2_col is None:
-        missing.append(LEVEL2_COLUMN)
     if level3_col is None:
         missing.append(LEVEL3_COLUMN)
     if quantity_col is None:
@@ -186,12 +161,11 @@ def _normalize_sales_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(
             "В файле продаж не хватает столбцов: "
             + ", ".join(missing)
-            + ". Ожидаются: Товар ур.2, Товар ур.3, Товар ур.4, Количество."
+            + ". Ожидаются: Товар ур.3, Товар ур.4, Количество."
         )
 
     result = pd.DataFrame(
         {
-            LEVEL2_COLUMN: prepared[level2_col].map(_display_product_name),
             LEVEL3_COLUMN: prepared[level3_col].map(_display_product_name),
             LEVEL4_COLUMN: (
                 prepared[level4_col].map(_normalize_level4_value)
@@ -203,10 +177,10 @@ def _normalize_sales_dataframe(df: pd.DataFrame) -> pd.DataFrame:
             ).fillna(0.0),
         }
     )
-    if CATEGORY_COLUMN in prepared.columns:
-        result[CATEGORY_COLUMN] = prepared[CATEGORY_COLUMN].map(_display_product_name)
-    else:
-        result[CATEGORY_COLUMN] = ""
+    if "Категория агрег." in prepared.columns:
+        result["Категория агрег."] = prepared["Категория агрег."].map(
+            _display_product_name
+        )
     return result
 
 
@@ -224,65 +198,31 @@ def _add_to_sales_map(
         display_names[key] = name
 
 
-def _build_category_sales_maps(
+def _build_level_sales_maps(
     sales_df: pd.DataFrame,
-) -> tuple[
-    dict[str, float],
-    dict[str, float],
-    dict[str, str],
-    dict[str, str],
-    float,
-    float,
-]:
-    """Две независимые карты: поды по ур.3, расходники по ур.4 (или ур.3 при «-»).
-
-    Возвращает также «безымянные» остатки, чтобы сумма совпадала с РНП.
-    """
-    sales_pods: dict[str, float] = {}
-    sales_consumables: dict[str, float] = {}
-    pod_names: dict[str, str] = {}
-    cons_names: dict[str, str] = {}
-    unnamed_pods = 0.0
-    unnamed_consumables = 0.0
+) -> tuple[dict[str, float], dict[str, float], dict[str, str], dict[str, str]]:
+    """Карты продаж по всем строкам: ур.3 и ур.4 отдельно."""
+    sales_level3: dict[str, float] = {}
+    sales_level4: dict[str, float] = {}
+    names3: dict[str, str] = {}
+    names4: dict[str, str] = {}
 
     for _, row in sales_df.iterrows():
         qty = float(row[QUANTITY_COLUMN])
         if qty <= 0:
             continue
-
-        category = row.get(CATEGORY_COLUMN, "")
         name3 = _display_product_name(row[LEVEL3_COLUMN])
         name4 = _normalize_level4_value(row[LEVEL4_COLUMN])
+        if name3:
+            _add_to_sales_map(sales_level3, names3, name3, qty)
+        if name4:
+            _add_to_sales_map(sales_level4, names4, name4, qty)
 
-        if _is_pod_category(category):
-            if name3:
-                _add_to_sales_map(sales_pods, pod_names, name3, qty)
-            else:
-                unnamed_pods += qty
-            continue
-
-        if _is_consumable_category(category):
-            name = name4 or name3
-            if name:
-                _add_to_sales_map(sales_consumables, cons_names, name, qty)
-            else:
-                unnamed_consumables += qty
-
-    return (
-        sales_pods,
-        sales_consumables,
-        pod_names,
-        cons_names,
-        unnamed_pods,
-        unnamed_consumables,
-    )
+    return sales_level3, sales_level4, names3, names4
 
 
 def _parse_reference_products(reference_df: pd.DataFrame) -> list[ReferenceProduct]:
-    """Возвращает упорядоченный список товаров из справочника Sales_pod_cartridge.
-
-    В каждой строке приоритет имени: «Товар» → ур.4 → ур.3 (как при записи в Sheets).
-    """
+    """Список товаров из Sales_pod_cartridge в порядке листа."""
     if reference_df is None or reference_df.empty:
         return []
 
@@ -344,56 +284,76 @@ def _parse_reference_products(reference_df: pd.DataFrame) -> list[ReferenceProdu
 
 def _resolve_sales_quantity(
     product: ReferenceProduct,
-    sales_pods: dict[str, float],
-    sales_consumables: dict[str, float],
+    sales_level3: dict[str, float],
+    sales_level4: dict[str, float],
 ) -> float:
-    """Количество из карты категории; при неверном теге в справочнике — запасной поиск."""
+    """Под → ур.3; расходник → ур.4, иначе ур.3."""
     key = _normalize_product_name(product.name)
-    pod_qty = float(sales_pods.get(key, 0.0))
-    cons_qty = float(sales_consumables.get(key, 0.0))
     if product.level == 3:
-        return pod_qty if pod_qty > 0 else cons_qty
-    return cons_qty if cons_qty > 0 else pod_qty
+        return float(sales_level3.get(key, 0.0))
+    qty4 = float(sales_level4.get(key, 0.0))
+    if qty4 > 0:
+        return qty4
+    return float(sales_level3.get(key, 0.0))
 
 
 def _discover_new_products(
     reference_products: list[ReferenceProduct],
-    sales_pods: dict[str, float],
-    sales_consumables: dict[str, float],
-    pod_names: dict[str, str],
-    cons_names: dict[str, str],
+    sales_df: pd.DataFrame,
 ) -> list[ReferenceProduct]:
-    """Новинки = имена из продаж, которых ещё нет в справочнике (любой тип)."""
-    known_keys = {
+    """Новинки: поды/расходники из продаж по категории РНП, которых нет в справочнике."""
+    known = {
         _normalize_product_name(product.name)
         for product in reference_products
         if _normalize_product_name(product.name)
     }
+    discovered: dict[str, tuple[ReferenceProduct, float]] = {}
 
-    discovered: list[tuple[ReferenceProduct, float]] = []
+    has_category = "Категория агрег." in sales_df.columns
 
-    for key, qty in sales_pods.items():
-        if qty <= 0 or key in known_keys:
+    for _, row in sales_df.iterrows():
+        qty = float(row[QUANTITY_COLUMN])
+        if qty <= 0:
             continue
-        discovered.append(
-            (
-                ReferenceProduct(name=pod_names.get(key, key), level=3),
-                qty,
-            )
-        )
+        name3 = _display_product_name(row[LEVEL3_COLUMN])
+        name4 = _normalize_level4_value(row[LEVEL4_COLUMN])
+        category = row["Категория агрег."] if has_category else ""
 
-    for key, qty in sales_consumables.items():
-        if qty <= 0 or key in known_keys:
+        cat_text = _display_product_name(category).casefold()
+        is_pod = "pod-систем" in cat_text or "pod систем" in cat_text
+        is_cons = "расходник" in cat_text
+
+        if has_category:
+            if is_pod and name3:
+                name, level = name3, 3
+            elif is_cons:
+                name = name4 or name3
+                if not name:
+                    continue
+                level = 4
+            else:
+                continue
+        else:
+            if name3 and _infer_reference_product_level(name3) == 3:
+                name, level = name3, 3
+            else:
+                continue
+
+        key = _normalize_product_name(name)
+        if not key or key in known:
             continue
-        discovered.append(
-            (
-                ReferenceProduct(name=cons_names.get(key, key), level=4),
-                qty,
-            )
-        )
+        existing = discovered.get(key)
+        if existing is None:
+            discovered[key] = (ReferenceProduct(name=name, level=level), qty)
+        else:
+            product, prev = existing
+            discovered[key] = (product, prev + qty)
 
-    discovered.sort(key=lambda item: (-item[1], item[0].name.casefold()))
-    return [product for product, _ in discovered]
+    ordered = sorted(
+        discovered.values(),
+        key=lambda item: (-item[1], item[0].name.casefold()),
+    )
+    return [product for product, _ in ordered]
 
 
 def _reference_product_column(reference_df: pd.DataFrame) -> str:
@@ -407,7 +367,7 @@ def append_products_to_cartridge_reference(
     reference_df: pd.DataFrame,
     products: list[ReferenceProduct],
 ) -> tuple[pd.DataFrame, list[str]]:
-    """Добавляет новые товары в конец справочника. Возвращает обновлённый df и список добавленных имён."""
+    """Добавляет новые товары в конец справочника."""
     if reference_df is None or reference_df.empty:
         raise ValueError("Справочник пуст — нечего дополнять.")
 
@@ -426,9 +386,6 @@ def append_products_to_cartridge_reference(
     new_rows: list[dict[str, object]] = []
 
     for product in products:
-        # Служебные «безымянные» остатки в справочник не пишем
-        if product.name in {UNNAMED_PODS_LABEL, UNNAMED_CONSUMABLES_LABEL}:
-            continue
         key = _normalize_product_name(product.name)
         if not key or key in existing_keys:
             continue
@@ -449,13 +406,7 @@ def build_hardware_sales_result(
     reference_df: pd.DataFrame | None,
     sales_df: pd.DataFrame | None,
 ) -> HardwareSalesResult:
-    """Считает таблицу продаж и список кандидатов для дополнения справочника.
-
-    Количество:
-    - поды — только из категории Pod-системы (разбивка по ур.3);
-    - расходники — только из категории Расходники (разбивка по ур.4 / ур.3 при «-»).
-    Сумма строк подов / расходников совпадает с итогами этих категорий в РНП.
-    """
+    """Таблица в порядке Sales_pod_cartridge + новинки в конце."""
     ref_source = reference_df if reference_df is not None else pd.DataFrame()
     reference_products = _parse_reference_products(ref_source)
 
@@ -476,59 +427,29 @@ def build_hardware_sales_result(
         )
 
     normalized_sales = _normalize_sales_dataframe(sales_df)
-    (
-        sales_pods,
-        sales_consumables,
-        pod_names,
-        cons_names,
-        unnamed_pods,
-        unnamed_consumables,
-    ) = _build_category_sales_maps(normalized_sales)
-
-    candidates = _discover_new_products(
-        reference_products,
-        sales_pods,
-        sales_consumables,
-        pod_names,
-        cons_names,
+    sales_level3, sales_level4, _names3, _names4 = _build_level_sales_maps(
+        normalized_sales
     )
 
-    # Безымянные остатки — только в таблице (не в справочник)
-    residual_rows: list[ReferenceProduct] = []
-    if unnamed_pods > 0:
-        residual_rows.append(ReferenceProduct(name=UNNAMED_PODS_LABEL, level=3))
-    if unnamed_consumables > 0:
-        residual_rows.append(
-            ReferenceProduct(name=UNNAMED_CONSUMABLES_LABEL, level=4)
-        )
+    candidates = _discover_new_products(reference_products, normalized_sales)
 
-    unnamed_qty = {
-        _normalize_product_name(UNNAMED_PODS_LABEL): unnamed_pods,
-        _normalize_product_name(UNNAMED_CONSUMABLES_LABEL): unnamed_consumables,
-    }
-
-    all_products = reference_products + residual_rows + candidates
-    rows: list[dict[str, object]] = []
-    for product in all_products:
-        key = _normalize_product_name(product.name)
-        if key in unnamed_qty:
-            qty = float(unnamed_qty[key])
-        else:
-            qty = _resolve_sales_quantity(product, sales_pods, sales_consumables)
-        rows.append({"Товар": product.name, "Продажи, шт.": qty})
+    # Порядок справочника, затем новинки
+    all_products = reference_products + candidates
+    rows = [
+        {
+            "Товар": product.name,
+            "Продажи, шт.": _resolve_sales_quantity(
+                product, sales_level3, sales_level4
+            ),
+        }
+        for product in all_products
+    ]
 
     table = (
         pd.DataFrame(rows)
         if rows
         else pd.DataFrame(columns=["Товар", "Продажи, шт."])
     )
-    if not table.empty:
-        # Сначала строки с продажами — иначе в короткой таблице видны только пустые нули
-        table = table.sort_values(
-            by=["Продажи, шт.", "Товар"],
-            ascending=[False, True],
-            kind="mergesort",
-        ).reset_index(drop=True)
     return HardwareSalesResult(
         table=table,
         reference_products=reference_products,
@@ -540,5 +461,4 @@ def build_hardware_sales_dynamics_table(
     reference_df: pd.DataFrame | None,
     sales_df: pd.DataFrame | None,
 ) -> pd.DataFrame:
-    """Таблица: товары из справочника + новые pod/картриджи, продажи в шт."""
     return build_hardware_sales_result(reference_df, sales_df).table
