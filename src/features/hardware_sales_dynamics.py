@@ -268,7 +268,10 @@ def _build_category_sales_maps(
 
 
 def _parse_reference_products(reference_df: pd.DataFrame) -> list[ReferenceProduct]:
-    """Возвращает упорядоченный список товаров из справочника Sales_pod_cartridge."""
+    """Возвращает упорядоченный список товаров из справочника Sales_pod_cartridge.
+
+    В каждой строке приоритет имени: «Товар» → ур.4 → ур.3 (как при записи в Sheets).
+    """
     if reference_df is None or reference_df.empty:
         return []
 
@@ -284,63 +287,46 @@ def _parse_reference_products(reference_df: pd.DataFrame) -> list[ReferenceProdu
         seen.add(key)
         products.append(ReferenceProduct(name=display, level=level))
 
-    has_level3 = LEVEL3_COLUMN in columns
-    has_level4 = LEVEL4_COLUMN in columns
+    product_col = columns.get(REFERENCE_PRODUCT_COLUMN)
+    category_col = columns.get(REFERENCE_CATEGORY_COLUMN)
+    level3_col = columns.get(LEVEL3_COLUMN)
+    level4_col = columns.get(LEVEL4_COLUMN)
 
-    if has_level3 or has_level4:
-        for _, row in reference_df.iterrows():
-            level4_name = (
-                _display_product_name(row.get(columns[LEVEL4_COLUMN]))
-                if has_level4
-                else ""
-            )
-            level3_name = (
-                _display_product_name(row.get(columns[LEVEL3_COLUMN]))
-                if has_level3
-                else ""
-            )
-            if level4_name:
-                _append(level4_name, 4)
-            elif level3_name:
-                _append(level3_name, 3)
-    elif REFERENCE_PRODUCT_COLUMN in columns:
-        product_col = columns[REFERENCE_PRODUCT_COLUMN]
-        category_col = columns.get(REFERENCE_CATEGORY_COLUMN)
-        if category_col:
-            for _, row in reference_df.iterrows():
-                display = _display_product_name(row.get(product_col))
-                if display:
-                    _append(
-                        display,
-                        _level_from_category_or_name(
-                            row.get(category_col, ""),
-                            display,
-                        ),
-                    )
-        else:
-            for value in reference_df[product_col]:
-                display = _display_product_name(value)
-                if display:
-                    _append(display, _infer_reference_product_level(display))
-    else:
-        first_col = reference_df.columns[0]
-        category_col = columns.get(REFERENCE_CATEGORY_COLUMN)
-        if category_col:
-            for _, row in reference_df.iterrows():
-                display = _display_product_name(row.get(first_col))
-                if display:
-                    _append(
-                        display,
-                        _level_from_category_or_name(
-                            row.get(category_col, ""),
-                            display,
-                        ),
-                    )
-        else:
-            for value in reference_df[first_col]:
-                display = _display_product_name(value)
-                if display:
-                    _append(display, _infer_reference_product_level(display))
+    for _, row in reference_df.iterrows():
+        name = ""
+        level = 4
+
+        if product_col is not None:
+            name = _display_product_name(row.get(product_col))
+            if name:
+                level = (
+                    _level_from_category_or_name(row.get(category_col, ""), name)
+                    if category_col is not None
+                    else _infer_reference_product_level(name)
+                )
+
+        if not name and level4_col is not None:
+            name = _display_product_name(row.get(level4_col))
+            if name:
+                level = 4
+
+        if not name and level3_col is not None:
+            name = _display_product_name(row.get(level3_col))
+            if name:
+                level = 3
+
+        if not name and product_col is None and level3_col is None and level4_col is None:
+            first_col = reference_df.columns[0]
+            name = _display_product_name(row.get(first_col))
+            if name:
+                level = (
+                    _level_from_category_or_name(row.get(category_col, ""), name)
+                    if category_col is not None
+                    else _infer_reference_product_level(name)
+                )
+
+        if name:
+            _append(name, level)
 
     return products
 
