@@ -17,9 +17,6 @@ from features.category_order import (
 )
 from features.data_prep import _normalize_level4_value, _rename_product_level_columns
 
-# Метка для проверки, что на Cloud задеплоен актуальный код
-CATEGORIES_SCHEMA_BUILD = "cat-levels-2-3-4-20260823"
-
 
 def _prepare_contractors_df(df: pd.DataFrame) -> tuple[pd.DataFrame | None, str | None]:
     if "Контрагент" not in df.columns:
@@ -44,11 +41,7 @@ def _prepare_categories_df(df: pd.DataFrame) -> tuple[pd.DataFrame | None, str |
     required = ["Товар ур.2", "Товар ур.3", "Товар ур.4"]
     missing = [col for col in required if col not in df.columns]
     if missing:
-        return (
-            None,
-            f"[{CATEGORIES_SCHEMA_BUILD}] В справочнике категорий нет столбцов: "
-            f"{', '.join(missing)}.",
-        )
+        return None, f"В справочнике категорий нет столбцов: {', '.join(missing)}."
     razrez_col = get_razrez_source_column(df)
     if razrez_col is None:
         df["Разрез"] = ""
