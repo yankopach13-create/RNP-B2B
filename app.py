@@ -89,6 +89,7 @@ def _render_uploader_help(image_name: str, caption: str = "") -> None:
 def main() -> None:
     st.set_page_config(page_title="B2B РНП", page_icon="📊", layout="wide")
     st.title("B2B")
+    st.caption("Сборка справочника категорий: cat-levels-2-3-4-20260823")
     st.markdown(
         '<a href="https://docs.google.com/spreadsheets/d/1mQiNJ_3XAimSraS3Wf5pWIFhkr8UWqJ7NlIoQvXoPkM/edit?hl=ru&gid=37260786#gid=37260786" '
         'target="_blank" rel="noopener noreferrer">База данных</a>',

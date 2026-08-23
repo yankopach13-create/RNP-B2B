@@ -15,7 +15,10 @@ from features.category_order import (
     get_category_source_column,
     get_razrez_source_column,
 )
-from features.data_prep import _normalize_level4_value
+from features.data_prep import _normalize_level4_value, _rename_product_level_columns
+
+# Метка для проверки, что на Cloud задеплоен актуальный код
+CATEGORIES_SCHEMA_BUILD = "cat-levels-2-3-4-20260823"
 
 
 def _prepare_contractors_df(df: pd.DataFrame) -> tuple[pd.DataFrame | None, str | None]:
@@ -27,16 +30,27 @@ def _prepare_contractors_df(df: pd.DataFrame) -> tuple[pd.DataFrame | None, str 
 
 
 def _prepare_categories_df(df: pd.DataFrame) -> tuple[pd.DataFrame | None, str | None]:
+    df = _rename_product_level_columns(df.copy())
+    df.columns = [str(col).strip() for col in df.columns]
+
     cat_col = get_category_source_column(df)
     if cat_col is None:
         return None, "В справочнике категорий нет столбца «Категория»."
+
+    # ур.4 опционален в заголовке — создаём пустой, если нет
+    if "Товар ур.4" not in df.columns:
+        df["Товар ур.4"] = ""
+
     required = ["Товар ур.2", "Товар ур.3", "Товар ур.4"]
     missing = [col for col in required if col not in df.columns]
     if missing:
-        return None, f"В справочнике категорий нет столбцов: {', '.join(missing)}."
+        return (
+            None,
+            f"[{CATEGORIES_SCHEMA_BUILD}] В справочнике категорий нет столбцов: "
+            f"{', '.join(missing)}.",
+        )
     razrez_col = get_razrez_source_column(df)
     if razrez_col is None:
-        df = df.copy()
         df["Разрез"] = ""
     return df, None
 
@@ -201,7 +215,7 @@ def batch_add_products_to_reference(
         new_row["Товар ур.2"] = p2
         new_row["Товар ур.3"] = p3
         new_row["Товар ур.4"] = p4
-        # Не пишем ур.1, если столбца уже нет; если есть — оставляем пустым
+        # Если в листе ещё есть устаревший ур.1 — пишем пусто, не ломая порядок столбцов
         if "Товар ур.1" in new_row:
             new_row["Товар ур.1"] = ""
         new_row[cat_col] = category_value
