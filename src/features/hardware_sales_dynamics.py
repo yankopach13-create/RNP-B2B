@@ -99,9 +99,14 @@ def _display_product_name(value: object) -> str:
 
 
 def _infer_reference_product_level(name: str) -> int:
-    """Под-системы в справочнике — ур.3, остальное — ур.4."""
+    """Поды/стартовые комплекты — ур.3, остальное — расходники (ур.4)."""
     lower = _display_product_name(name).casefold()
-    if lower.startswith("под-система") or lower.startswith("под система"):
+    if (
+        lower.startswith("под-система")
+        or lower.startswith("под система")
+        or lower.startswith("стартовый комплект")
+        or lower.startswith("стартовый набор")
+    ):
         return 3
     return 4
 
@@ -112,7 +117,13 @@ def product_level_to_category(level: int) -> str:
 
 def category_label_to_level(category: str) -> int:
     normalized = _display_product_name(category).casefold()
+    if not normalized:
+        return 4
     if normalized in {"поды", "pod", "pods", "под-системы", "под системы"}:
+        return 3
+    if "расход" in normalized:
+        return 4
+    if "pod" in normalized or "под" in normalized:
         return 3
     return 4
 
@@ -336,11 +347,13 @@ def _resolve_sales_quantity(
     sales_pods: dict[str, float],
     sales_consumables: dict[str, float],
 ) -> float:
-    """Поды только из карты подов, расходники — только из карты расходников."""
+    """Количество из карты категории; при неверном теге в справочнике — запасной поиск."""
     key = _normalize_product_name(product.name)
+    pod_qty = float(sales_pods.get(key, 0.0))
+    cons_qty = float(sales_consumables.get(key, 0.0))
     if product.level == 3:
-        return float(sales_pods.get(key, 0.0))
-    return float(sales_consumables.get(key, 0.0))
+        return pod_qty if pod_qty > 0 else cons_qty
+    return cons_qty if cons_qty > 0 else pod_qty
 
 
 def _discover_new_products(
@@ -350,22 +363,17 @@ def _discover_new_products(
     pod_names: dict[str, str],
     cons_names: dict[str, str],
 ) -> list[ReferenceProduct]:
-    """Новинки = имена из продаж категории, которых нет в справочнике (по типу)."""
-    known_pods = {
+    """Новинки = имена из продаж, которых ещё нет в справочнике (любой тип)."""
+    known_keys = {
         _normalize_product_name(product.name)
         for product in reference_products
-        if product.level == 3 and _normalize_product_name(product.name)
-    }
-    known_cons = {
-        _normalize_product_name(product.name)
-        for product in reference_products
-        if product.level == 4 and _normalize_product_name(product.name)
+        if _normalize_product_name(product.name)
     }
 
     discovered: list[tuple[ReferenceProduct, float]] = []
 
     for key, qty in sales_pods.items():
-        if qty <= 0 or key in known_pods:
+        if qty <= 0 or key in known_keys:
             continue
         discovered.append(
             (
@@ -375,7 +383,7 @@ def _discover_new_products(
         )
 
     for key, qty in sales_consumables.items():
-        if qty <= 0 or key in known_cons:
+        if qty <= 0 or key in known_keys:
             continue
         discovered.append(
             (
@@ -514,6 +522,13 @@ def build_hardware_sales_result(
         if rows
         else pd.DataFrame(columns=["Товар", "Продажи, шт."])
     )
+    if not table.empty:
+        # Сначала строки с продажами — иначе в короткой таблице видны только пустые нули
+        table = table.sort_values(
+            by=["Продажи, шт.", "Товар"],
+            ascending=[False, True],
+            kind="mergesort",
+        ).reset_index(drop=True)
     return HardwareSalesResult(
         table=table,
         reference_products=reference_products,

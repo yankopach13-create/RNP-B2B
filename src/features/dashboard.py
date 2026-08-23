@@ -736,7 +736,7 @@ def render_special_retail_dashboard(
         )
 
         st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-        _panel_height = _table_height_from_rows(4)
+        _panel_height = _table_height_from_rows(12)
         col_hardware, col_ref_log = st.columns([1.05, 1], gap="medium")
         with col_hardware:
             _render_hardware_sales_dynamics_panel(
@@ -999,14 +999,21 @@ def _render_hardware_sales_dynamics_panel(
         return
 
     hardware_table = hardware_table.copy()
-    hardware_table["Продажи, шт."] = hardware_table["Продажи, шт."].map(
-        lambda value: _format_quantity(float(value))
+    hardware_table["Продажи, шт."] = pd.to_numeric(
+        hardware_table["Продажи, шт."], errors="coerce"
+    ).fillna(0.0).map(
+        lambda value: (
+            f"{int(round(float(value))):,}".replace(",", " ")
+            if float(value) > 0
+            else "0"
+        )
     )
+    visible_rows = min(max(len(hardware_table), 6), 16)
     st.dataframe(
         hardware_table,
         use_container_width=True,
         hide_index=True,
-        height=table_height,
+        height=_table_height_from_rows(visible_rows),
         column_config={
             "Товар": st.column_config.TextColumn("Товар"),
             "Продажи, шт.": st.column_config.TextColumn("Продажи, шт."),
