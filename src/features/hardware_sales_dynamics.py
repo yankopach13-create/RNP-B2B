@@ -129,14 +129,19 @@ def _is_pod_category(category: object) -> bool:
     text = _display_product_name(category).casefold()
     if not text:
         return False
-    return "pod-систем" in text or "pod систем" in text or text.startswith("pod")
+    return (
+        "pod-систем" in text
+        or "pod систем" in text
+        or text.startswith("pod")
+        or text.startswith("pod-")
+    )
 
 
 def _is_consumable_category(category: object) -> bool:
     text = _display_product_name(category).casefold()
     if not text:
         return False
-    return "расходник" in text
+    return "расходник" in text or "картридж" in text
 
 
 def _normalize_sales_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -206,7 +211,7 @@ def _add_to_sales_map(
 def _build_sales_maps_from_sales(
     sales_df: pd.DataFrame,
 ) -> tuple[dict[str, float], dict[str, float], dict[str, str]]:
-    """Агрегирует продажи по всем строкам: карты ур.3 и ур.4."""
+    """Агрегирует продажи pod/расходников: отдельные карты ур.3 и ур.4 без двойного учёта."""
     sales_level3: dict[str, float] = {}
     sales_level4: dict[str, float] = {}
     display_names: dict[str, str] = {}
@@ -216,13 +221,21 @@ def _build_sales_maps_from_sales(
         if qty <= 0:
             continue
 
+        category = row.get(CATEGORY_COLUMN, "")
         name3 = _display_product_name(row[LEVEL3_COLUMN])
         name4 = _normalize_level4_value(row[LEVEL4_COLUMN])
 
-        if name3:
-            _add_to_sales_map(sales_level3, display_names, name3, qty)
-        if name4:
-            _add_to_sales_map(sales_level4, display_names, name4, qty)
+        if _is_pod_category(category):
+            if name3:
+                _add_to_sales_map(sales_level3, display_names, name3, qty)
+            continue
+
+        if _is_consumable_category(category):
+            if name4:
+                _add_to_sales_map(sales_level4, display_names, name4, qty)
+            elif name3:
+                # Расходник с прочерком в ур.4 — учитываем по ур.3
+                _add_to_sales_map(sales_level3, display_names, name3, qty)
 
     return sales_level3, sales_level4, display_names
 
@@ -316,7 +329,10 @@ def _resolve_sales_quantity(
     qty = float(sales_level4.get(key, 0.0))
     if qty > 0:
         return qty
-    return float(sales_level3.get(key, 0.0))
+    # Расходник без совпадения в ур.4 — fallback только на ур.3 (строки расходников с «-»)
+    if product.level == 4:
+        return float(sales_level3.get(key, 0.0))
+    return 0.0
 
 
 def _discover_new_products(

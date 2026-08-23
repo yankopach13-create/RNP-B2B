@@ -370,12 +370,14 @@ def _render_standalone_report_sections(
         )
 
     if sales_with_categories_df is not None and not sales_with_categories_df.empty:
-        rendered = True
-        st.markdown("### Динамика продаж железа")
-        _render_hardware_sales_dynamics_panel(
-            sales_with_categories_df,
-            table_height=_table_height_from_rows(6),
-        )
+        hardware_df = _hardware_sales_df(sales_with_categories_df)
+        if hardware_df is not None:
+            rendered = True
+            st.markdown("### Динамика продаж железа")
+            _render_hardware_sales_dynamics_panel(
+                hardware_df,
+                table_height=_table_height_from_rows(6),
+            )
 
     if cash_inflow_df is not None:
         rendered = True
@@ -738,7 +740,7 @@ def render_special_retail_dashboard(
         col_hardware, col_ref_log = st.columns([1.05, 1], gap="medium")
         with col_hardware:
             _render_hardware_sales_dynamics_panel(
-                merged_df,
+                spec_df,
                 table_height=_panel_height,
             )
         with col_ref_log:
@@ -866,6 +868,18 @@ def render_special_retail_dashboard(
                 "Значение": st.column_config.TextColumn("Значение"),
             },
         )
+
+
+def _hardware_sales_df(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Продажи для блока железа: только B2B Спец. розница."""
+    if df is None or df.empty:
+        return None
+    if "Подразделение" not in df.columns:
+        return df
+    filtered = df[df["Подразделение"].isin(SPECIAL_RETAIL_SUBDIVISIONS)]
+    if filtered.empty:
+        return None
+    return filtered
 
 
 def _render_hardware_sales_dynamics_panel(
@@ -2448,9 +2462,9 @@ def _build_report_excel(
         if not dz_trad_err:
             sheets_to_write.append(("ДЗ Традиция", dz_trad_table))
 
-    if not merged_df.empty:
+    if not spec_df.empty:
         sheets_to_write.append(
-            ("Динамика железа", _build_hardware_dynamics_export_table(merged_df))
+            ("Динамика железа", _build_hardware_dynamics_export_table(spec_df))
         )
 
     if (turnover_90_df is not None or turnover_7_df is not None) and spec_df.empty:
