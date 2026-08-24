@@ -13,11 +13,12 @@ from features.category_order import (
     normalize_razrez_value,
 )
 from features.data_prep import (
-    PRODUCT_COLUMNS,
+    FALLBACK_SUBCATEGORY,
     _build_categories_map,
     _normalise_product_columns,
     _normalise_category_name,
     _rename_product_level_columns,
+    merge_product_categories,
 )
 
 
@@ -48,14 +49,16 @@ def calculate_turnover_by_category(
     period_days: int = 90,
     category_order_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame | None:
+    """Считает оборачиваемость по категориям через ключ ур.2 + ур.3 + ур.4."""
     if turnover_df is None or turnover_df.empty:
         return None
 
     df = turnover_df.copy()
     df = _rename_product_level_columns(df)
 
-    product_cols_present = [col for col in PRODUCT_COLUMNS if col in df.columns]
-    if not product_cols_present:
+    # Нужны хотя бы ур.2 и ур.3; ур.4 создастся при нормализации (пусто / «-»).
+    required_base = ("Товар ур.2", "Товар ур.3")
+    if any(col not in df.columns for col in required_base):
         return None
 
     if "Клиент" in df.columns and clients_filter:
@@ -73,13 +76,15 @@ def calculate_turnover_by_category(
         lambda name: _normalise_category_name(name, known_categories)
     )
 
-    df = df.merge(
-        categories_map[PRODUCT_COLUMNS + ["Категория агрег.", "Разрез"]].drop_duplicates(),
-        how="left",
-        on=PRODUCT_COLUMNS,
+    df = merge_product_categories(
+        df,
+        categories_map,
+        value_cols=("Категория агрег.", "Разрез"),
     )
-    df["Категория агрег."] = df["Категория агрег."].apply(
-        lambda name: _normalise_category_name(name, known_categories)
+    df["Категория агрег."] = (
+        df["Категория агрег."]
+        .fillna(FALLBACK_SUBCATEGORY)
+        .apply(lambda name: _normalise_category_name(name, known_categories))
     )
     df["Разрез"] = df["Разрез"].fillna("").astype(str).map(normalize_razrez_value)
 

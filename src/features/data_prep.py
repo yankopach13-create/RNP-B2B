@@ -102,11 +102,10 @@ def prepare_dataset(
             .fillna(merged.loc[missing_mask, "Сегмент"])
         )
 
-    merge_cols = PRODUCT_COLUMNS + ["Категория агрег.", "Разрез"]
-    merged = merged.merge(
-        categories_map[merge_cols].drop_duplicates(),
-        how="left",
-        on=PRODUCT_COLUMNS,
+    merged = merge_product_categories(
+        merged,
+        categories_map,
+        value_cols=("Категория агрег.", "Разрез"),
     )
     merged["Категория агрег."] = (
         merged["Категория агрег."]
@@ -156,6 +155,69 @@ def _normalize_level4_value(value: object) -> str:
     return text
 
 
+def merge_product_categories(
+    df: pd.DataFrame,
+    categories_map: pd.DataFrame,
+    value_cols: tuple[str, ...] = ("Категория агрег.", "Разрез"),
+) -> pd.DataFrame:
+    """Присоединяет категорию/разрез по ур.2 + ур.3 + ур.4.
+
+    1) Точное совпадение по трём уровням (включая заполненный ур.4).
+    2) Для несматченных с пустым ур.4 — по ур.2 + ур.3 к строкам
+       справочника с пустым ур.4.
+    """
+    if df.empty:
+        result = df.copy()
+        for col in value_cols:
+            if col not in result.columns:
+                result[col] = pd.NA
+        return result
+
+    missing_keys = [col for col in PRODUCT_COLUMNS if col not in df.columns]
+    if missing_keys:
+        raise ValueError(
+            f"Для сопоставления с категориями нужны столбцы: {', '.join(PRODUCT_COLUMNS)}. "
+            f"Нет: {', '.join(missing_keys)}."
+        )
+
+    present_values = [col for col in value_cols if col in categories_map.columns]
+    if not present_values:
+        raise ValueError(
+            f"В карте категорий нет столбцов для присоединения: {', '.join(value_cols)}."
+        )
+
+    lookup = (
+        categories_map[list(PRODUCT_COLUMNS) + present_values]
+        .drop_duplicates(subset=PRODUCT_COLUMNS, keep="first")
+    )
+
+    # Убираем старые value_cols, если они уже есть в df (повторный вызов).
+    base = df.drop(columns=[c for c in present_values if c in df.columns], errors="ignore")
+    result = base.merge(lookup, on=PRODUCT_COLUMNS, how="left")
+
+    primary = present_values[0]
+    unmatched = result[primary].isna()
+    empty_level4 = result["Товар ур.4"].eq("")
+    fallback_mask = unmatched & empty_level4
+    if not fallback_mask.any():
+        return result
+
+    lookup_23 = (
+        lookup.loc[lookup["Товар ур.4"].eq(""), ["Товар ур.2", "Товар ур.3", *present_values]]
+        .drop_duplicates(subset=["Товар ур.2", "Товар ур.3"], keep="first")
+    )
+    if lookup_23.empty:
+        return result
+
+    fallback = (
+        result.loc[fallback_mask, ["Товар ур.2", "Товар ур.3"]]
+        .merge(lookup_23, on=["Товар ур.2", "Товар ур.3"], how="left")
+    )
+    for col in present_values:
+        result.loc[fallback_mask, col] = fallback[col].to_numpy()
+    return result
+
+
 def _build_categories_map(categories_df: pd.DataFrame) -> pd.DataFrame:
     cat_col = get_category_source_column(categories_df)
     if cat_col is None:
@@ -177,18 +239,30 @@ def _build_categories_map(categories_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _rename_product_level_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Нормализует имена столбцов уровней товара (с учётом пробелов в заголовках)."""
     rename_map = {
-        "Товар2": "Товар ур.2",
-        "Товар 2": "Товар ур.2",
-        "Товар ур. 2": "Товар ур.2",
-        "Товар3": "Товар ур.3",
-        "Товар 3": "Товар ур.3",
-        "Товар ур. 3": "Товар ур.3",
-        "Товар4": "Товар ур.4",
-        "Товар 4": "Товар ур.4",
-        "Товар ур. 4": "Товар ур.4",
+        "товар2": "Товар ур.2",
+        "товар 2": "Товар ур.2",
+        "товар ур.2": "Товар ур.2",
+        "товар ур. 2": "Товар ур.2",
+        "товар3": "Товар ур.3",
+        "товар 3": "Товар ур.3",
+        "товар ур.3": "Товар ур.3",
+        "товар ур. 3": "Товар ур.3",
+        "товар4": "Товар ур.4",
+        "товар 4": "Товар ур.4",
+        "товар ур.4": "Товар ур.4",
+        "товар ур. 4": "Товар ур.4",
     }
-    return df.rename(columns={src: dst for src, dst in rename_map.items() if src in df.columns})
+    stripped = {col: str(col).strip() for col in df.columns}
+    df = df.rename(columns=stripped)
+    resolved: dict[str, str] = {}
+    for col in df.columns:
+        key = str(col).strip().casefold()
+        target = rename_map.get(key)
+        if target and target not in df.columns and target not in resolved.values():
+            resolved[col] = target
+    return df.rename(columns=resolved)
 
 
 def _normalise_product_columns(df: pd.DataFrame) -> pd.DataFrame:

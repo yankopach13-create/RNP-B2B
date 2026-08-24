@@ -14,11 +14,11 @@ from features.category_order import (
     resolve_spec_value,
 )
 from features.data_prep import (
-    PRODUCT_COLUMNS,
     _build_categories_map,
     _normalise_category_name,
     _normalise_product_columns,
     _rename_product_level_columns,
+    merge_product_categories,
 )
 
 RTRADE_CLIENTS = {
@@ -168,10 +168,10 @@ def _merge_categories(
         lambda name: _normalise_category_name(name, known_categories)
     )
 
-    merged = sales_prep.merge(
-        categories_map[PRODUCT_COLUMNS + ["Категория агрег.", "Разрез"]].drop_duplicates(),
-        on=PRODUCT_COLUMNS,
-        how="left",
+    merged = merge_product_categories(
+        sales_prep,
+        categories_map,
+        value_cols=("Категория агрег.", "Разрез"),
     )
     merged["Категория агрег."] = (
         merged["Категория агрег."]
