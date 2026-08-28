@@ -1786,8 +1786,8 @@ def _build_client_block_table(spec_df: pd.DataFrame) -> pd.DataFrame:
     out_columns = [
         "Клиент",
         "Группа контрагентов",
-        "Товар ур.2",
         "Товар ур.3",
+        "Товар ур.4",
         "Неделя",
         "Продажи с НДС",
         "Маржа",
@@ -1802,7 +1802,7 @@ def _build_client_block_table(spec_df: pd.DataFrame) -> pd.DataFrame:
         sort_cols.append("Клиент")
     if "Группа контрагентов" in df.columns:
         sort_cols.append("Группа контрагентов")
-    for col in ("Товар ур.2", "Товар ур.3"):
+    for col in ("Товар ур.3", "Товар ур.4"):
         if col in df.columns:
             sort_cols.append(col)
     if sort_cols:
@@ -1820,8 +1820,8 @@ def _build_client_block_table(spec_df: pd.DataFrame) -> pd.DataFrame:
     )
     groups = groups_raw.replace("", "-")
 
-    p2 = _display_product_level(df["Товар ур.2"]) if "Товар ур.2" in df.columns else pd.Series([""] * len(df), index=df.index)
     p3 = _display_product_level(df["Товар ур.3"]) if "Товар ур.3" in df.columns else pd.Series([""] * len(df), index=df.index)
+    p4 = _display_product_level(df["Товар ур.4"]) if "Товар ур.4" in df.columns else pd.Series([""] * len(df), index=df.index)
 
     week_col = _find_week_column_name(df)
     if week_col:
@@ -1837,8 +1837,8 @@ def _build_client_block_table(spec_df: pd.DataFrame) -> pd.DataFrame:
         {
             "Клиент": clients,
             "Группа контрагентов": groups,
-            "Товар ур.2": p2,
             "Товар ур.3": p3,
+            "Товар ур.4": p4,
             "Неделя": week_series,
             "Продажи с НДС": sales_num.map(lambda x: _format_money(float(x))),
             "Маржа": margin_num.map(lambda x: _format_money(float(x))),
@@ -1858,8 +1858,8 @@ def _build_client_block_export_table(spec_df: pd.DataFrame) -> pd.DataFrame:
         "Клиент",
         "Группа контрагентов",
         "Категория товара",
-        "Товар ур.2",
         "Товар ур.3",
+        "Товар ур.4",
         "Продажи с НДС",
         "Маржа",
         "Количество",
@@ -1877,7 +1877,7 @@ def _build_client_block_export_table(spec_df: pd.DataFrame) -> pd.DataFrame:
         sort_cols.append("Группа контрагентов")
     if "Категория агрег." in df.columns:
         sort_cols.append("Категория агрег.")
-    for col in ("Товар ур.2", "Товар ур.3"):
+    for col in ("Товар ур.3", "Товар ур.4"):
         if col in df.columns:
             sort_cols.append(col)
     if sort_cols:
@@ -1905,8 +1905,8 @@ def _build_client_block_export_table(spec_df: pd.DataFrame) -> pd.DataFrame:
         else pd.Series([""] * len(df), index=df.index)
     )
 
-    p2 = _display_product_level(df["Товар ур.2"]) if "Товар ур.2" in df.columns else pd.Series([""] * len(df), index=df.index)
     p3 = _display_product_level(df["Товар ур.3"]) if "Товар ур.3" in df.columns else pd.Series([""] * len(df), index=df.index)
+    p4 = _display_product_level(df["Товар ур.4"]) if "Товар ур.4" in df.columns else pd.Series([""] * len(df), index=df.index)
 
     sales_num = pd.to_numeric(df.get("Продажи с НДС", 0.0), errors="coerce")
     margin_num = pd.to_numeric(df.get("Маржа", 0.0), errors="coerce")
@@ -1924,8 +1924,8 @@ def _build_client_block_export_table(spec_df: pd.DataFrame) -> pd.DataFrame:
             "Клиент": clients_annotated,
             "Группа контрагентов": groups,
             "Категория товара": category,
-            "Товар ур.2": p2,
             "Товар ур.3": p3,
+            "Товар ур.4": p4,
             "Продажи с НДС": sales_num,
             "Маржа": margin_num,
             "Количество": qty_num,
