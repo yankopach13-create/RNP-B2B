@@ -42,6 +42,29 @@ def _collect_turnover_razrez_keys(
     return keys
 
 
+_GENERIC_PRODUCT_ALIASES = frozenset(
+    {
+        "товар",
+        "номенклатура",
+        "товар ур4",
+        "товар.ур.4",
+    }
+)
+
+
+def _prepare_turnover_product_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Нормализует уровни товара; одиночный столбец «Товар» трактует как ур.4."""
+    prepared = _rename_product_level_columns(df)
+    if "Товар ур.4" in prepared.columns:
+        return prepared
+
+    for col in prepared.columns:
+        key = str(col).strip().casefold()
+        if key in _GENERIC_PRODUCT_ALIASES:
+            return prepared.rename(columns={col: "Товар ур.4"})
+    return prepared
+
+
 def calculate_turnover_by_category(
     turnover_df: pd.DataFrame | None,
     categories_df: pd.DataFrame,
@@ -49,16 +72,16 @@ def calculate_turnover_by_category(
     period_days: int = 90,
     category_order_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame | None:
-    """Считает оборачиваемость по категориям через ключ ур.2 + ур.3 + ур.4."""
+    """Считает оборачиваемость по категориям: сопоставление по ур.4, затем агрегация."""
     if turnover_df is None or turnover_df.empty:
         return None
 
     df = turnover_df.copy()
-    df = _rename_product_level_columns(df)
+    df = _prepare_turnover_product_columns(df)
 
-    # Нужны хотя бы ур.2 и ур.3; ур.4 создастся при нормализации (пусто / «-»).
-    required_base = ("Товар ур.2", "Товар ур.3")
-    if any(col not in df.columns for col in required_base):
+    has_level4 = "Товар ур.4" in df.columns
+    has_level23 = "Товар ур.2" in df.columns or "Товар ур.3" in df.columns
+    if not has_level4 and not has_level23:
         return None
 
     if "Клиент" in df.columns and clients_filter:

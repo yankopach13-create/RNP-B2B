@@ -155,16 +155,22 @@ def _normalize_level4_value(value: object) -> str:
     return text
 
 
+def _level4_match_key(value: object) -> str:
+    """Ключ сопоставления ур.4 без учёта регистра."""
+    return _normalize_level4_value(value).casefold()
+
+
 def merge_product_categories(
     df: pd.DataFrame,
     categories_map: pd.DataFrame,
     value_cols: tuple[str, ...] = ("Категория агрег.", "Разрез"),
 ) -> pd.DataFrame:
-    """Присоединяет категорию/разрез по ур.2 + ур.3 + ур.4.
+    """Присоединяет категорию/разрез к строкам товаров.
 
-    1) Точное совпадение по трём уровням (включая заполненный ур.4).
+    1) Точное совпадение по трём уровням (ур.2 + ур.3 + ур.4).
     2) Для несматченных с пустым ур.4 — по ур.2 + ур.3 к строкам
        справочника с пустым ур.4.
+    3) Для несматченных с заполненным ур.4 — по ур.4 (без учёта регистра).
     """
     if df.empty:
         result = df.copy()
@@ -196,9 +202,20 @@ def merge_product_categories(
     result = base.merge(lookup, on=PRODUCT_COLUMNS, how="left")
 
     primary = present_values[0]
+    result = _fill_unmatched_by_level23(result, lookup, present_values, primary)
+    result = _fill_unmatched_by_level4(result, lookup, present_values, primary)
+    return result
+
+
+def _fill_unmatched_by_level23(
+    result: pd.DataFrame,
+    lookup: pd.DataFrame,
+    present_values: list[str],
+    primary: str,
+) -> pd.DataFrame:
+    """Дозаполняет категорию по ур.2 + ур.3, если ур.4 пустой."""
     unmatched = result[primary].isna()
-    empty_level4 = result["Товар ур.4"].eq("")
-    fallback_mask = unmatched & empty_level4
+    fallback_mask = unmatched & result["Товар ур.4"].eq("")
     if not fallback_mask.any():
         return result
 
@@ -215,6 +232,35 @@ def merge_product_categories(
     )
     for col in present_values:
         result.loc[fallback_mask, col] = fallback[col].to_numpy()
+    return result
+
+
+def _fill_unmatched_by_level4(
+    result: pd.DataFrame,
+    lookup: pd.DataFrame,
+    present_values: list[str],
+    primary: str,
+) -> pd.DataFrame:
+    """Дозаполняет категорию по ур.4, если трёхуровневый ключ не сработал."""
+    unmatched = result[primary].isna()
+    level4_mask = unmatched & result["Товар ур.4"].ne("")
+    if not level4_mask.any():
+        return result
+
+    lookup_l4 = lookup.loc[lookup["Товар ур.4"].ne(""), ["Товар ур.4", *present_values]].copy()
+    if lookup_l4.empty:
+        return result
+
+    lookup_l4["_l4_key"] = lookup_l4["Товар ур.4"].map(_level4_match_key)
+    lookup_l4 = lookup_l4.drop(columns=["Товар ур.4"]).drop_duplicates(
+        subset=["_l4_key"], keep="first"
+    )
+
+    source = result.loc[level4_mask, ["Товар ур.4"]].copy()
+    source["_l4_key"] = source["Товар ур.4"].map(_level4_match_key)
+    fallback = source[["_l4_key"]].merge(lookup_l4, on="_l4_key", how="left")
+    for col in present_values:
+        result.loc[level4_mask, col] = fallback[col].to_numpy()
     return result
 
 
@@ -253,6 +299,10 @@ def _rename_product_level_columns(df: pd.DataFrame) -> pd.DataFrame:
         "товар 4": "Товар ур.4",
         "товар ур.4": "Товар ур.4",
         "товар ур. 4": "Товар ур.4",
+        "товар.ур.4": "Товар ур.4",
+        "товар ур4": "Товар ур.4",
+        "товар.ур.2": "Товар ур.2",
+        "товар.ур.3": "Товар ур.3",
     }
     stripped = {col: str(col).strip() for col in df.columns}
     df = df.rename(columns=stripped)
