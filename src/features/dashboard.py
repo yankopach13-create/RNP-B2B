@@ -88,7 +88,8 @@ EXCISE_LIQUID_PCS_INPUT_KEY = "excise_liquid_pcs_input"
 SPEC_ORDERS_COUNT_INPUT_KEY = "spec_orders_count_input"
 EXCISE_LIQUID_MARGIN_MULTIPLIER = 4.25
 
-AI_REPORT_VERSION = "2026-07-16-v2"
+AI_REPORT_VERSION = "2026-10-05-v3"
+OES_4ML_CATEGORY_LABEL = "ОЭС 4 мл, шт."
 
 AI_REPORT_SPEC_CATEGORY_LABELS = [
     "ОЭС 2 мл, шт.",
@@ -100,7 +101,7 @@ AI_REPORT_SPEC_CATEGORY_LABELS = [
     "в т.ч. Уголь, шт.",
     "в т.ч. БКС/ТКС, шт.",
     "Никотиновые паучи, шт.",
-    "Прочие товары, шт.",
+    OES_4ML_CATEGORY_LABEL,
 ]
 
 AI_REPORT_TRADITION_CATEGORY_ROWS: list[tuple[str, str]] = [
@@ -109,12 +110,23 @@ AI_REPORT_TRADITION_CATEGORY_ROWS: list[tuple[str, str]] = [
         "ОЭС 2 мл, шт.",
     ),
     (
-        "Одноразовые электронные сигареты ( 10 мл ) Традиция",
-        "ОЭС 10 мл, шт.",
+        "Одноразовые электронные сигареты ( 4 мл ) Традиция",
+        OES_4ML_CATEGORY_LABEL,
     ),
     ("Никотиновые паучи Традиция", "Никотиновые паучи, шт."),
     ("в т.ч. Уголь, шт.", "в т.ч. Уголь, шт."),
 ]
+
+
+def _ensure_category_in_order(order: list[str], label: str) -> list[str]:
+    """Добавляет категорию в порядок, если её нет в листе category_order.
+
+    Иначе extract_category_row_values не посчитает сумму и строка ИИ-отчёта будет пустой.
+    """
+    target = _label_key(label)
+    if any(_label_key(item) == target for item in order):
+        return order
+    return [*order, label]
 
 
 def get_excise_liquid_margin_deduction() -> float:
@@ -1961,8 +1973,14 @@ def build_ai_report_table(
     receivables_df: pd.DataFrame | None,
     category_order_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    spec_order = load_category_order_list(category_order_df, COL_SPEC_RNP)
-    tradition_order = load_category_order_list(category_order_df, COL_TRADITION_RNP)
+    spec_order = _ensure_category_in_order(
+        load_category_order_list(category_order_df, COL_SPEC_RNP),
+        OES_4ML_CATEGORY_LABEL,
+    )
+    tradition_order = _ensure_category_in_order(
+        load_category_order_list(category_order_df, COL_TRADITION_RNP),
+        OES_4ML_CATEGORY_LABEL,
+    )
     margin_adjustment = get_excise_liquid_margin_deduction()
 
     spec_finance = _vertical_metrics_lookup(
