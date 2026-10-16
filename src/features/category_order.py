@@ -50,14 +50,19 @@ FALLBACK_ORDERS: dict[str, list[str]] = {
 }
 
 
+# Расчётная строка Общего РНП: продажи угля в килограммах, не категория справочника.
+COAL_KG_LABEL_KEY = "уголь в кг"
+
+
 @dataclass(frozen=True)
 class CategoryRowSpec:
-    """Строка таблицы: категория целиком или разрез внутри родительской категории."""
+    """Строка таблицы: категория целиком, разрез или расчёт «Уголь в кг»."""
 
     label: str
     parent_category: str
     razrez: str | None
     is_slice: bool
+    is_coal_kg: bool = False
 
 
 def get_category_source_column(df: pd.DataFrame) -> str | None:
@@ -349,13 +354,19 @@ def load_category_order_list(
     return values or list(fallback)
 
 
+def is_coal_kg_label(label: object) -> bool:
+    """True, если подпись — расчётная строка «Уголь в кг», а не товарная категория."""
+    return _label_key(label) == COAL_KG_LABEL_KEY
+
+
 def category_labels_only(order: list[str]) -> list[str]:
-    """Возвращает порядок только категорий, без строк-разрезов «в т.ч. …»."""
+    """Возвращает порядок только категорий, без разрезов «в т.ч. …» и «Уголь в кг»."""
     return [
         label
         for label in order
         if str(label).strip()
         and not str(label).strip().lower().startswith(SLICE_PREFIX)
+        and not is_coal_kg_label(label)
     ]
 
 
@@ -366,6 +377,17 @@ def parse_category_order(order: list[str]) -> list[CategoryRowSpec]:
     for raw_label in order:
         label = str(raw_label).strip()
         if not label:
+            continue
+        if is_coal_kg_label(label):
+            specs.append(
+                CategoryRowSpec(
+                    label=label,
+                    parent_category="",
+                    razrez=None,
+                    is_slice=False,
+                    is_coal_kg=True,
+                )
+            )
             continue
         if label.lower().startswith(SLICE_PREFIX):
             razrez = normalize_razrez_value(label)
@@ -407,7 +429,7 @@ def collect_known_category_names(
     if category_order_df is not None and not category_order_df.empty:
         for column in category_order_df.columns:
             names.update(load_category_order_list(category_order_df, column))
-    return {name for name in names if name}
+    return {name for name in names if name and not is_coal_kg_label(name)}
 
 
 def _category_series(df: pd.DataFrame) -> pd.Series:
@@ -425,12 +447,87 @@ def _razrez_series(df: pd.DataFrame) -> pd.Series:
     return pd.Series([""] * len(df), index=df.index, dtype="string")
 
 
+def _parse_weight_kg(value: object) -> float:
+    """Вес из Ves: число или текст с запятой («0,08»)."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return 0.0
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    text = str(value).strip().replace("\u00a0", "").replace(" ", "").replace(",", ".")
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
+def _sheet_column_key(name: object) -> str:
+    return " ".join(str(name or "").strip().casefold().split())
+
+
+def _product_level4_key(value: object) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    return str(value).strip().casefold()
+
+
+def coal_weight_by_product(weights_df: pd.DataFrame | None) -> dict[str, float]:
+    """Словарь «товар ур.4 → вес, кг» с листа Ves."""
+    if weights_df is None or weights_df.empty:
+        return {}
+
+    columns = {_sheet_column_key(col): col for col in weights_df.columns}
+    product_col = columns.get("товар ур.4") or columns.get("товар ур. 4")
+    weight_col = columns.get("вес в кг") or columns.get("вес")
+    if product_col is None or weight_col is None:
+        return {}
+
+    mapping: dict[str, float] = {}
+    for product, weight in zip(weights_df[product_col], weights_df[weight_col]):
+        key = _product_level4_key(product)
+        if not key:
+            continue
+        mapping[key] = _parse_weight_kg(weight)
+    return mapping
+
+
+def sum_coal_weight_kg(
+    df: pd.DataFrame,
+    weights_df: pd.DataFrame | None,
+) -> float:
+    """Сумма продаж угля в кг: Количество × вес товара ур.4 из Ves."""
+    mapping = coal_weight_by_product(weights_df)
+    if (
+        df.empty
+        or not mapping
+        or "Товар ур.4" not in df.columns
+        or "Количество" not in df.columns
+    ):
+        return 0.0
+
+    qty = pd.to_numeric(df["Количество"], errors="coerce").fillna(0.0)
+    weights = df["Товар ур.4"].map(
+        lambda value: mapping.get(_product_level4_key(value), 0.0)
+    )
+    return float((qty * weights).sum())
+
+
+def format_coal_kg(value: float | int | None) -> str:
+    """Килограммы с одним знаком после запятой."""
+    numeric = 0.0 if value is None else float(value)
+    return f"{numeric:.1f}".replace(".", ",")
+
+
 def resolve_spec_value(
     df: pd.DataFrame,
     spec: CategoryRowSpec,
     value_column: str = "Количество",
+    coal_weights_df: pd.DataFrame | None = None,
 ) -> float:
     """Считает значение для строки category_order по данным продаж."""
+    if spec.is_coal_kg:
+        return sum_coal_weight_kg(df, coal_weights_df)
     if df.empty:
         return 0.0
     if value_column not in df.columns:
@@ -584,13 +681,21 @@ def extract_category_row_values(
     value_column: str = "Количество",
     *,
     format_value: Callable[[float], str] | None = None,
+    coal_weights_df: pd.DataFrame | None = None,
 ) -> dict[str, str]:
     """Возвращает словарь {подпись строки: отформатированное значение}."""
     specs = parse_category_order(order)
     rows: dict[str, str] = {}
     for spec in specs:
-        value = resolve_spec_value(df, spec, value_column=value_column)
-        if format_value is not None:
+        value = resolve_spec_value(
+            df,
+            spec,
+            value_column=value_column,
+            coal_weights_df=coal_weights_df,
+        )
+        if spec.is_coal_kg:
+            rows[spec.label] = format_coal_kg(value) if format_value is not None else value
+        elif format_value is not None:
             rows[spec.label] = format_value(value)
         else:
             rows[spec.label] = value

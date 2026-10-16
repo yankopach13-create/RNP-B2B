@@ -36,6 +36,7 @@ try:
         clear_session_references,
         get_reference_label,
         load_category_order_reference,
+        load_coal_weights_reference,
         load_reference,
         preload_references,
         sheets_configured,
@@ -375,6 +376,7 @@ def main() -> None:
         contractors_df = refs[REF_CONTRACTORS]
         categories_df = refs[REF_CATEGORIES]
         category_order_df = load_category_order_reference()
+        coal_weights_df = load_coal_weights_reference()
         try:
             load_reference(REF_SALES_POD_CARTRIDGE)
         except Exception:  # noqa: BLE001
@@ -434,6 +436,7 @@ def main() -> None:
     if categories_df is not None:
         st.session_state.categories_df = categories_df
     st.session_state.category_order_df = category_order_df
+    st.session_state.coal_weights_df = coal_weights_df
 
     st.markdown("---")
     render_special_retail_dashboard(
@@ -441,6 +444,7 @@ def main() -> None:
         contractors_df=contractors_df,
         categories_df=categories_df,
         category_order_df=category_order_df,
+        coal_weights_df=coal_weights_df,
         orders_df=orders_df,
         turnover_90_df=turnover_90_df,
         turnover_7_df=turnover_7_df,

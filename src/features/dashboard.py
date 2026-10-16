@@ -529,6 +529,7 @@ def render_special_retail_dashboard(
     turnover_7_df: pd.DataFrame | None = None,
     receivables_df: pd.DataFrame | None = None,
     cash_inflow_df: pd.DataFrame | None = None,
+    coal_weights_df: pd.DataFrame | None = None,
 ) -> None:
     has_sales = sales_df is not None and not sales_df.empty
     new_clients: list[str] = []
@@ -834,6 +835,7 @@ def render_special_retail_dashboard(
             receivables_df=receivables_df,
             cash_inflow_df=cash_inflow_df,
             category_order_df=category_order_df,
+            coal_weights_df=coal_weights_df,
         )
         st.dataframe(
             general_table,
@@ -2111,6 +2113,7 @@ def _build_general_rnp_summary_table(
     receivables_df: pd.DataFrame | None,
     cash_inflow_df: pd.DataFrame | None,
     category_order_df: pd.DataFrame | None = None,
+    coal_weights_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     general_spec_order = load_category_order_list(category_order_df, COL_GENERAL_SPEC)
     general_tradition_order = load_category_order_list(
@@ -2120,11 +2123,13 @@ def _build_general_rnp_summary_table(
         df=spec_df,
         order=general_spec_order,
         format_value=_format_quantity_compact,
+        coal_weights_df=coal_weights_df,
     )
     spec_category_client = extract_category_row_values(
         df=target_client_df,
         order=general_spec_order,
         format_value=_format_quantity_compact,
+        coal_weights_df=coal_weights_df,
     )
     spec_metrics_overall = _extract_metrics_rows(
         spec_df,

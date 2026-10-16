@@ -20,6 +20,7 @@ REF_DZ_SPEC = "dz_spec"
 REF_DZ_TRAD = "dz_trad"
 REF_DZ_REMOVE = "dz_remove"
 REF_SALES_POD_CARTRIDGE = "sales_pod_cartridge"
+REF_VES = "ves"
 
 DEFAULT_PRELOAD_KEYS: tuple[str, ...] = (
     REF_CONTRACTORS,
@@ -64,6 +65,11 @@ _REFERENCE_META: dict[str, dict[str, str]] = {
         "sheet": "Sales_pod_cartridge",
         "local": "Sales_pod_cartridge.xlsx",
         "title": "Динамика продаж железа B2B",
+    },
+    REF_VES: {
+        "sheet": "Ves",
+        "local": "Ves.xlsx",
+        "title": "Вес угля",
     },
 }
 
@@ -475,6 +481,16 @@ def load_category_order_reference() -> pd.DataFrame:
         return pd.DataFrame()
     try:
         return load_reference(REF_CATEGORY_ORDER)
+    except Exception:  # noqa: BLE001
+        return pd.DataFrame()
+
+
+def load_coal_weights_reference() -> pd.DataFrame:
+    """Загружает лист Ves (товар ур.4 → вес, кг); при отсутствии — пустой DataFrame."""
+    if not reference_exists(REF_VES):
+        return pd.DataFrame()
+    try:
+        return load_reference(REF_VES)
     except Exception:  # noqa: BLE001
         return pd.DataFrame()
 
