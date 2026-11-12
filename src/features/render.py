@@ -40,7 +40,6 @@ def render_section(
     aggregates: dict[str, list[str]] | None = None,
     split_finance_categories: bool = False,
     combine_finance_categories: bool = False,
-    overall_margin_adjustment: float = 0.0,
 ) -> None:
     aggregates = aggregates or {}
     if category_order is None:
@@ -79,7 +78,6 @@ def render_section(
                     [],
                     include_overall=True,
                     aggregates=aggregates,
-                    overall_margin_adjustment=overall_margin_adjustment,
                 )
                 subdivisions_metrics_table = build_financial_metrics_vertical_table(
                     dataframe,
@@ -158,7 +156,6 @@ def render_section(
                 subdivisions,
                 include_overall=include_overall,
                 aggregates=aggregates,
-                overall_margin_adjustment=overall_margin_adjustment,
             )
             category_table = build_category_table(
                 dataframe,
@@ -309,7 +306,6 @@ def build_financial_metrics_table(
     subdivisions: list[str],
     include_overall: bool = True,
     aggregates: dict[str, list[str]] | None = None,
-    overall_margin_adjustment: float = 0.0,
 ) -> pd.DataFrame:
     aggregates = aggregates or {}
     subset_cache = {
@@ -327,8 +323,6 @@ def build_financial_metrics_table(
 
         if include_overall:
             total_value = float(df[column_name].sum())
-            if column_name == "Маржа" and overall_margin_adjustment:
-                total_value -= overall_margin_adjustment
             row["Общие"] = _format_money(total_value)
 
         for subdivision in subdivisions:
@@ -343,8 +337,6 @@ def build_financial_metrics_table(
         if include_overall:
             total_sales_wo_vat = float(df["Продажи с НДС"].sum()) / 1.2
             total_margin = float(df["Маржа"].sum())
-            if overall_margin_adjustment:
-                total_margin -= overall_margin_adjustment
             total_pct = (
                 (total_margin / total_sales_wo_vat) * 100
                 if not np.isclose(total_sales_wo_vat, 0.0)
@@ -374,7 +366,6 @@ def build_financial_metrics_vertical_table(
     include_overall: bool = True,
     aggregates: dict[str, list[str]] | None = None,
     format_money: Callable[[float | int | None], str] | None = None,
-    overall_margin_adjustment: float = 0.0,
 ) -> pd.DataFrame:
     aggregates = aggregates or {}
     money_fmt = format_money if format_money is not None else _format_money
@@ -400,8 +391,6 @@ def build_financial_metrics_vertical_table(
     for idx, (group_name, group_df) in enumerate(groups):
         sales = float(group_df["Продажи с НДС"].sum()) if "Продажи с НДС" in group_df.columns else 0.0
         margin = float(group_df["Маржа"].sum()) if "Маржа" in group_df.columns else 0.0
-        if group_name == "Общие" and overall_margin_adjustment:
-            margin -= overall_margin_adjustment
         sales_wo_vat = sales / 1.2
         md_percent = (
             (margin / sales_wo_vat) * 100 if not np.isclose(sales_wo_vat, 0.0) else 0.0

@@ -24,7 +24,7 @@ from features.category_order import (
     get_razrez_source_column,
     load_category_order_list,
 )
-from features.data_prep import prepare_dataset
+from features.data_prep import excise_level3_keys, prepare_dataset
 from features.factor_analysis import (
     RTRADE_CLIENTS,
     _build_factor_table,
@@ -64,6 +64,7 @@ from data.references import (
     append_reference_rows,
     get_reference_label,
     get_reference_title,
+    load_excise_liquids_reference,
     load_reference,
 )
 from features.hardware_sales_dynamics import (
@@ -84,9 +85,7 @@ _HEADER_METRIC_VALUE_COLOR = "#1565c0"
 _REFERENCE_ADDITIONS_LOG_KEY = "reference_additions_log"
 # Ключи session_state для полей над блоками загрузки (неделя сбрасывается в app при новой загрузке).
 CLIENT_BLOCK_WEEK_INPUT_KEY = "client_block_week_number_input"
-EXCISE_LIQUID_PCS_INPUT_KEY = "excise_liquid_pcs_input"
 SPEC_ORDERS_COUNT_INPUT_KEY = "spec_orders_count_input"
-EXCISE_LIQUID_MARGIN_MULTIPLIER = 4.25
 
 AI_REPORT_VERSION = "2026-10-05-v3"
 OES_4ML_CATEGORY_LABEL = "ОЭС 4 мл, шт."
@@ -129,10 +128,12 @@ def _ensure_category_in_order(order: list[str], label: str) -> list[str]:
     return [*order, label]
 
 
-def get_excise_liquid_margin_deduction() -> float:
-    """Сумма, вычитаемая из общей маржи Спец.розницы: шт. акцизной жидкости × 4,25."""
-    pcs = float(st.session_state.get(EXCISE_LIQUID_PCS_INPUT_KEY, 0) or 0)
-    return pcs * EXCISE_LIQUID_MARGIN_MULTIPLIER
+def _load_excise_level3_keys() -> set[str] | None:
+    """Ключи ур.3 с верной маржой. None — лист «Акцизные» недоступен, маржу не меняем."""
+    sheet = load_excise_liquids_reference()
+    if sheet is None:
+        return None
+    return excise_level3_keys(sheet)
 
 
 def get_spec_orders_count() -> int:
@@ -400,13 +401,12 @@ def _render_standalone_report_sections(
     return rendered
 
 
-def render_global_rnp_inputs(default_excise_liquid: int = 0) -> None:
-    """Поля «Актуальная неделя», «Акцизной жидкости шт.» и «Кол-во заказов» над блоками РНП."""
+def render_global_rnp_inputs() -> None:
+    """Поля «Актуальная неделя» и «Кол-во заказов» над блоками РНП."""
     st.markdown(
         f"""
         <style>
         .st-key-{CLIENT_BLOCK_WEEK_INPUT_KEY},
-        .st-key-{EXCISE_LIQUID_PCS_INPUT_KEY},
         .st-key-{SPEC_ORDERS_COUNT_INPUT_KEY} {{
             max-width: 9.75rem;
             min-width: 9.75rem;
@@ -414,14 +414,12 @@ def render_global_rnp_inputs(default_excise_liquid: int = 0) -> None:
         }}
         .st-key-{CLIENT_BLOCK_WEEK_INPUT_KEY} [data-testid="stTextInput"],
         .st-key-{CLIENT_BLOCK_WEEK_INPUT_KEY} [data-testid="stNumberInput"],
-        .st-key-{EXCISE_LIQUID_PCS_INPUT_KEY} [data-testid="stNumberInput"],
         .st-key-{SPEC_ORDERS_COUNT_INPUT_KEY} [data-testid="stNumberInput"] {{
             max-width: 9.75rem;
             min-width: 9.75rem;
             width: 9.75rem;
         }}
         .st-key-{CLIENT_BLOCK_WEEK_INPUT_KEY} input,
-        .st-key-{EXCISE_LIQUID_PCS_INPUT_KEY} input,
         .st-key-{SPEC_ORDERS_COUNT_INPUT_KEY} input {{
             max-width: 9.75rem;
             min-width: 9.75rem;
@@ -434,22 +432,13 @@ def render_global_rnp_inputs(default_excise_liquid: int = 0) -> None:
             margin: 0 0 0.2rem 0;
             white-space: nowrap;
         }}
-        .rnp-excise-deduction-hint {{
-            font-size: 0.78rem;
-            color: #1565c0;
-            font-style: italic;
-            font-weight: 400;
-            margin: 0.45rem 0 0 0;
-            white-space: nowrap;
-            line-height: 1.35;
-        }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-    _week_col, _excise_col, _orders_col, _spacer_col = st.columns(
-        [1.75, 1.75, 1.75, 4.75], gap="large"
+    _week_col, _orders_col, _spacer_col = st.columns(
+        [1.75, 1.75, 6.5], gap="large"
     )
 
     with _week_col:
@@ -467,24 +456,6 @@ def render_global_rnp_inputs(default_excise_liquid: int = 0) -> None:
             help=(
                 "Номер отчётной недели (1–53). Влияет на клиентский блок и имя Excel-отчёта. "
                 "Если поле пустое, используется неделя из загруженных продаж."
-            ),
-        )
-
-    with _excise_col:
-        st.markdown(
-            '<p class="rnp-global-inputs-label">Акцизной жидкости шт.:</p>',
-            unsafe_allow_html=True,
-        )
-        st.number_input(
-            "Акцизной жидкости шт.",
-            min_value=0,
-            value=default_excise_liquid,
-            step=1,
-            key=EXCISE_LIQUID_PCS_INPUT_KEY,
-            label_visibility="collapsed",
-            help=(
-                "Умножается на 4,25 — полученная сумма вычитается только из общей маржи "
-                "Спец.розницы (группы подразделений не меняются)."
             ),
         )
 
@@ -509,15 +480,6 @@ def render_global_rnp_inputs(default_excise_liquid: int = 0) -> None:
     with _spacer_col:
         st.empty()
 
-    _deduction_display = _format_money(get_excise_liquid_margin_deduction())
-    st.markdown(
-        (
-            '<p class="rnp-excise-deduction-hint">'
-            f"Вычтено из МД {_deduction_display}</p>"
-        ),
-        unsafe_allow_html=True,
-    )
-
 
 def render_special_retail_dashboard(
     sales_df: pd.DataFrame | None,
@@ -540,19 +502,26 @@ def render_special_retail_dashboard(
     target_client_name = 'ООО "Айса"'
     target_client_sales_df = pd.DataFrame()
 
+    excise_level3_keys: set[str] | None = None
     if has_sales:
+        excise_level3_keys = _load_excise_level3_keys()
+        if excise_level3_keys is None:
+            st.warning(
+                "Лист «Акцизные» не прочитан. Маржа жидкостей 25 мл оставлена как в файле продаж."
+            )
         merged_df, new_clients, unmatched_products = prepare_dataset(
             sales_df=sales_df,
             contractors_df=contractors_df,
             categories_df=categories_df,
             category_order_df=category_order_df,
+            excise_level3_keys=excise_level3_keys,
         )
         spec_df = merged_df[
             merged_df["Подразделение"].isin(SPECIAL_RETAIL_SUBDIVISIONS)
         ]
         tradition_df = merged_df[merged_df["Подразделение"] == "Традиция"]
         target_client_sales_df = _prepare_target_client_sales_df(
-            sales_df=sales_df,
+            sales_df=merged_df,
             categories_df=categories_df,
             target_client=target_client_name,
             category_order_df=category_order_df,
@@ -586,6 +555,7 @@ def render_special_retail_dashboard(
         contractors_fallback_df=contractors_df,
         categories_fallback_df=categories_df,
         category_order_fallback_df=category_order_df,
+        excise_level3_keys=excise_level3_keys,
     )
     _inject_dashboard_styles()
 
@@ -671,7 +641,6 @@ def render_special_retail_dashboard(
             aggregates={"Минская область": MINSK_REGION_COMPONENTS},
             split_finance_categories=True,
             show_turnover=False,
-            overall_margin_adjustment=get_excise_liquid_margin_deduction(),
         )
 
         allowed_subdivisions = set(spec_df["Подразделение"].dropna().astype(str))
@@ -1983,8 +1952,6 @@ def build_ai_report_table(
         load_category_order_list(category_order_df, COL_TRADITION_RNP),
         OES_4ML_CATEGORY_LABEL,
     )
-    margin_adjustment = get_excise_liquid_margin_deduction()
-
     spec_finance = _vertical_metrics_lookup(
         build_financial_metrics_vertical_table(
             spec_df,
@@ -1992,7 +1959,6 @@ def build_ai_report_table(
             include_overall=True,
             aggregates={},
             format_money=_format_money_compact,
-            overall_margin_adjustment=margin_adjustment,
         )
     )
     tradition_finance = _vertical_metrics_lookup(
@@ -2134,7 +2100,6 @@ def _build_general_rnp_summary_table(
     spec_metrics_overall = _extract_metrics_rows(
         spec_df,
         format_money=_format_money_compact,
-        overall_margin_adjustment=get_excise_liquid_margin_deduction(),
     )
     spec_metrics_client = _extract_metrics_rows(
         target_client_df, format_money=_format_money_compact
@@ -2270,7 +2235,6 @@ def _extract_metrics_rows(
     df: pd.DataFrame,
     *,
     format_money: Callable[[float | int | None], str] | None = None,
-    overall_margin_adjustment: float = 0.0,
 ) -> dict[str, str]:
     table = build_financial_metrics_vertical_table(
         df=df,
@@ -2278,7 +2242,6 @@ def _extract_metrics_rows(
         include_overall=True,
         aggregates={},
         format_money=format_money,
-        overall_margin_adjustment=overall_margin_adjustment,
     )
     if table.empty:
         return {"Выручка": "", "МД": "", "МД%": ""}
@@ -2459,6 +2422,7 @@ def _build_report_excel(
     contractors_fallback_df: pd.DataFrame,
     categories_fallback_df: pd.DataFrame,
     category_order_fallback_df: pd.DataFrame | None = None,
+    excise_level3_keys: set[str] | None = None,
 ) -> bytes | None:
     contractors_df = _read_latest_reference(REF_CONTRACTORS, contractors_fallback_df)
     categories_df = _read_latest_reference(REF_CATEGORIES, categories_fallback_df)
@@ -2476,6 +2440,7 @@ def _build_report_excel(
             contractors_df=contractors_df,
             categories_df=categories_df,
             category_order_df=category_order_df,
+            excise_level3_keys=excise_level3_keys,
         )
         spec_df = merged_df[
             merged_df["Подразделение"].isin(SPECIAL_RETAIL_SUBDIVISIONS)
@@ -2522,7 +2487,6 @@ def _build_report_excel(
             [],
             include_overall=True,
             aggregates=aggregates,
-            overall_margin_adjustment=get_excise_liquid_margin_deduction(),
         )
         _, dz_spec_total, _ = _build_dz_spec_table(receivables_df)
         financial_overall = _append_dz_metric_row(financial_overall, dz_spec_total)
@@ -2639,6 +2603,7 @@ def _build_full_report_excel(
     contractors_fallback_df: pd.DataFrame,
     categories_fallback_df: pd.DataFrame,
     category_order_fallback_df: pd.DataFrame | None = None,
+    excise_level3_keys: set[str] | None = None,
 ) -> bytes | None:
     """Обратная совместимость: полный отчёт при наличии продаж."""
     return _build_report_excel(
@@ -2651,6 +2616,7 @@ def _build_full_report_excel(
         contractors_fallback_df=contractors_fallback_df,
         categories_fallback_df=categories_fallback_df,
         category_order_fallback_df=category_order_fallback_df,
+        excise_level3_keys=excise_level3_keys,
     )
 
 

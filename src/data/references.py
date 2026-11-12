@@ -21,6 +21,7 @@ REF_DZ_TRAD = "dz_trad"
 REF_DZ_REMOVE = "dz_remove"
 REF_SALES_POD_CARTRIDGE = "sales_pod_cartridge"
 REF_VES = "ves"
+REF_EXCISE = "excise"
 
 DEFAULT_PRELOAD_KEYS: tuple[str, ...] = (
     REF_CONTRACTORS,
@@ -70,6 +71,11 @@ _REFERENCE_META: dict[str, dict[str, str]] = {
         "sheet": "Ves",
         "local": "Ves.xlsx",
         "title": "Вес угля",
+    },
+    REF_EXCISE: {
+        "sheet": "Акцизные",
+        "local": "Акцизные.xlsx",
+        "title": "Акцизные жидкости",
     },
 }
 
@@ -493,6 +499,21 @@ def load_coal_weights_reference() -> pd.DataFrame:
         return load_reference(REF_VES)
     except Exception:  # noqa: BLE001
         return pd.DataFrame()
+
+
+def load_excise_liquids_reference() -> pd.DataFrame | None:
+    """Лист «Акцизные»: жидкости ур.3 с уже верной маржой.
+
+    None — лист не удалось прочитать. Пустой DataFrame — лист есть, строк нет.
+    """
+    if REF_EXCISE in _session_ref_cache():
+        return _session_ref_cache()[REF_EXCISE].copy()
+    if not sheets_configured() and not _local_path(REF_EXCISE).exists():
+        return None
+    try:
+        return load_reference(REF_EXCISE)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def load_reference(key: str, *, fresh: bool = False) -> pd.DataFrame:

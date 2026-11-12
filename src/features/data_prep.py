@@ -4,7 +4,11 @@ from typing import Iterable, List, Tuple
 import numpy as np
 import pandas as pd
 
-from config.constants import CATEGORY_FIXES
+from config.constants import (
+    CATEGORY_FIXES,
+    LIQUID_25ML_CATEGORY,
+    NON_EXCISE_LIQUID_MARGIN_PER_UNIT,
+)
 from features.category_order import (
     collect_known_category_names,
     get_category_source_column,
@@ -29,8 +33,12 @@ def prepare_dataset(
     contractors_df: pd.DataFrame,
     categories_df: pd.DataFrame,
     category_order_df: pd.DataFrame | None = None,
+    excise_level3_keys: set[str] | None = None,
 ) -> Tuple[pd.DataFrame, List[str], List[Tuple[str, str, str]]]:
     """Соединяет продажи со справочниками контрагентов и категорий.
+
+    excise_level3_keys: названия ур.3 с верной маржой. None — маржу не трогать.
+    Пустое множество — вычет 4,25 за шт. у всех жидкостей 25 мл.
 
     Returns:
         Tuple containing:
@@ -134,7 +142,79 @@ def prepare_dataset(
     unmatched_products_list = sorted(set(unmatched_products_list))
 
     merged = merged.dropna(subset=["Подразделение"]).reset_index(drop=True)
+    if excise_level3_keys is not None:
+        merged = apply_non_excise_liquid_margin(merged, excise_level3_keys)
     return merged, sorted(new_clients), unmatched_products_list
+
+
+def product_level3_key(value: object) -> str:
+    """Ключ «Товар ур.3»: без крайних пробелов, регистр не учитывается."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    return " ".join(str(value).strip().split()).casefold()
+
+
+def excise_level3_keys(sheet: pd.DataFrame) -> set[str]:
+    """Названия ур.3 с листа «Акцизные», для которых маржу не корректируют."""
+    if sheet is None or sheet.empty:
+        return set()
+    prepared = _rename_product_level_columns(sheet.copy())
+    column = _excise_name_column(prepared)
+    keys = {
+        product_level3_key(value)
+        for value in prepared[column].tolist()
+    }
+    return {key for key in keys if key and key not in {"__none__", "nan", "none"}}
+
+
+def apply_non_excise_liquid_margin(
+    df: pd.DataFrame,
+    excise_level3_keys: set[str],
+) -> pd.DataFrame:
+    """Для жидкостей 25 мл вне листа «Акцизные» вычитает 4,25 за штуку из маржи.
+
+    Товары с листа не меняются. Правка в строке, поэтому суммы по клиенту,
+    подразделению и общие сходятся.
+    """
+    if df.empty or "Маржа" not in df.columns or "Категория агрег." not in df.columns:
+        return df
+    result = df.copy()
+    category_key = result["Категория агрег."].map(_label_key)
+    level3 = (
+        result["Товар ур.3"].map(product_level3_key)
+        if "Товар ур.3" in result.columns
+        else pd.Series([""] * len(result), index=result.index)
+    )
+    liquid_mask = category_key.eq(_label_key(LIQUID_25ML_CATEGORY))
+    adjust_mask = liquid_mask & ~level3.isin(excise_level3_keys)
+    if not adjust_mask.any():
+        return result
+    quantity = (
+        pd.to_numeric(result["Количество"], errors="coerce").fillna(0.0)
+        if "Количество" in result.columns
+        else pd.Series(0.0, index=result.index)
+    )
+    margin = pd.to_numeric(result["Маржа"], errors="coerce").fillna(0.0)
+    result["Маржа"] = margin
+    result.loc[adjust_mask, "Маржа"] = (
+        margin.loc[adjust_mask]
+        - quantity.loc[adjust_mask] * NON_EXCISE_LIQUID_MARGIN_PER_UNIT
+    )
+    return result
+
+
+def _excise_name_column(df: pd.DataFrame) -> str:
+    """Колонка с названием жидкости ур.3 на листе «Акцизные»."""
+    if "Товар ур.3" in df.columns:
+        return "Товар ур.3"
+    folded = [(col, str(col).strip().casefold()) for col in df.columns]
+    for col, key in folded:
+        if "ур" in key and "3" in key:
+            return col
+    for col, key in folded:
+        if any(token in key for token in ("наименован", "товар", "жидк", "акциз")):
+            return col
+    return str(df.columns[0])
 
 
 def _is_blank_product_row(row: pd.Series) -> bool:
