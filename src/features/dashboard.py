@@ -1915,8 +1915,8 @@ def _find_week_column_name(df: pd.DataFrame) -> str | None:
 
 
 _CLIENT_BLOCK_COLUMNS = [
-    "Клиент",
     "Категория товара",
+    "Клиент",
     "Неделя",
     "Продажи с НДС",
     "Маржа",
@@ -1991,14 +1991,14 @@ def _build_client_block_table(
     week_number: int | None,
     categories_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Клиентский блок на экране: клиент, категория, актуальная неделя и суммы."""
+    """Клиентский блок на экране: категория, клиент, актуальная неделя и суммы."""
     grouped = _client_block_aggregated(spec_df, week_number, categories_df)
     if grouped.empty:
         return pd.DataFrame(columns=_CLIENT_BLOCK_COLUMNS)
     return pd.DataFrame(
         {
-            "Клиент": grouped["Клиент"],
             "Категория товара": grouped["Категория товара"],
+            "Клиент": grouped["Клиент"],
             "Неделя": grouped["Неделя"],
             "Продажи с НДС": grouped["Продажи с НДС"].map(lambda x: _format_money(float(x))),
             "Маржа": grouped["Маржа"].map(lambda x: _format_money(float(x))),
