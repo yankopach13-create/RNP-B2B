@@ -13,6 +13,7 @@ from features.data_prep import (
 from features.render import _format_money_compact, _format_quantity_compact
 
 MASTER_CATEGORY_COLUMN = "Мастер файл"
+CLIENT_BLOCK_CATEGORY_COLUMN = "Клиентский блок"
 # Пустые заголовки-разделители для вставки таблицы в Excel. Символы разные,
 # чтобы имена столбцов не совпали, и на экране они не видны.
 COLUMN_GAP_BEFORE_PERIOD = "\u00a0"
@@ -43,17 +44,29 @@ _REQUIRED_COLUMNS = (
 )
 
 
-def find_master_category_column(df: pd.DataFrame) -> str | None:
-    """Имя столбца «Мастер файл» в справочнике категорий."""
+def find_labeled_column(df: pd.DataFrame, label: str) -> str | None:
+    """Имя столбца справочника с заданным заголовком, без учёта регистра."""
+    if df is None:
+        return None
     for col in df.columns:
-        if str(col).strip().casefold() == MASTER_CATEGORY_COLUMN.casefold():
+        if str(col).strip().casefold() == label.casefold():
             return str(col)
     return None
 
 
-def master_category_options(categories_df: pd.DataFrame) -> list[str]:
-    """Уникальные непустые значения столбца «Мастер файл» для списка в форме."""
-    column = find_master_category_column(categories_df)
+def find_master_category_column(df: pd.DataFrame) -> str | None:
+    """Имя столбца «Мастер файл» в справочнике категорий."""
+    return find_labeled_column(df, MASTER_CATEGORY_COLUMN)
+
+
+def find_client_block_category_column(df: pd.DataFrame) -> str | None:
+    """Имя столбца «Клиентский блок» в справочнике категорий."""
+    return find_labeled_column(df, CLIENT_BLOCK_CATEGORY_COLUMN)
+
+
+def _labeled_category_options(categories_df: pd.DataFrame, label: str) -> list[str]:
+    """Уникальные непустые значения столбца справочника для списка в форме."""
+    column = find_labeled_column(categories_df, label)
     if column is None:
         return []
     values_column = categories_df[column]
@@ -66,6 +79,16 @@ def master_category_options(categories_df: pd.DataFrame) -> list[str]:
         if value and value.casefold() not in {"nan", "none"}
     }
     return sorted(cleaned)
+
+
+def master_category_options(categories_df: pd.DataFrame) -> list[str]:
+    """Уникальные непустые значения столбца «Мастер файл» для списка в форме."""
+    return _labeled_category_options(categories_df, MASTER_CATEGORY_COLUMN)
+
+
+def client_block_category_options(categories_df: pd.DataFrame) -> list[str]:
+    """Уникальные непустые значения столбца «Клиентский блок» для списка в форме."""
+    return _labeled_category_options(categories_df, CLIENT_BLOCK_CATEGORY_COLUMN)
 
 
 def master_file_week_number(master_df: pd.DataFrame | None) -> int | None:
@@ -292,22 +315,23 @@ def _resolved_client_name(df: pd.DataFrame) -> pd.Series:
     return groups.where(use_group, clients)
 
 
-def _master_category_by_level4(categories_df: pd.DataFrame) -> dict[str, str]:
-    """Первая непустая категория «Мастер файл» для каждого «Товар ур.4»."""
-    column = find_master_category_column(categories_df)
-    if column is None or categories_df.empty:
+def category_lookup_by_level4(
+    categories_df: pd.DataFrame,
+    label: str,
+) -> dict[str, str]:
+    """Первая непустая категория столбца для каждого «Товар ур.4»."""
+    if categories_df is None or categories_df.empty:
         return {}
     prepared = categories_df.copy()
     prepared.columns = [str(col).strip() for col in prepared.columns]
     prepared = _rename_product_level_columns(prepared)
-    if "Товар ур.4" not in prepared.columns:
+    column = find_labeled_column(prepared, label)
+    if column is None or "Товар ур.4" not in prepared.columns:
         return {}
-    category_column = find_master_category_column(prepared) or column
     lookup: dict[str, str] = {}
-    for level4, raw_category in zip(
-        prepared["Товар ур.4"].tolist(),
-        prepared[category_column].tolist(),
-    ):
+    level4_values = _column_series(prepared, "Товар ур.4").tolist()
+    category_values = _column_series(prepared, column).tolist()
+    for level4, raw_category in zip(level4_values, category_values):
         key = _level4_match_key(level4)
         if not key or key in lookup:
             continue
@@ -320,6 +344,20 @@ def _master_category_by_level4(categories_df: pd.DataFrame) -> dict[str, str]:
             continue
         lookup[key] = category
     return lookup
+
+
+def _master_category_by_level4(categories_df: pd.DataFrame) -> dict[str, str]:
+    """Первая непустая категория «Мастер файл» для каждого «Товар ур.4»."""
+    return category_lookup_by_level4(categories_df, MASTER_CATEGORY_COLUMN)
+
+
+def map_client_block_categories(
+    level4: pd.Series,
+    categories_df: pd.DataFrame,
+) -> pd.Series:
+    """Категория столбца «Клиентский блок» по «Товар ур.4». Нет совпадения — пустая строка."""
+    lookup = category_lookup_by_level4(categories_df, CLIENT_BLOCK_CATEGORY_COLUMN)
+    return level4.map(lambda value: lookup.get(_level4_match_key(value), ""))
 
 
 def _month_label(value: object) -> str:

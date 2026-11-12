@@ -16,7 +16,10 @@ from features.category_order import (
     get_razrez_source_column,
 )
 from features.data_prep import _normalize_level4_value, _rename_product_level_columns
-from features.master_file import find_master_category_column
+from features.master_file import (
+    find_client_block_category_column,
+    find_master_category_column,
+)
 
 
 def _prepare_contractors_df(df: pd.DataFrame) -> tuple[pd.DataFrame | None, str | None]:
@@ -147,11 +150,12 @@ def batch_add_clients_to_reference(
 
 
 def batch_add_products_to_reference(
-    items: list[tuple[tuple[str, str, str], str, str, str]],
+    items: list[tuple[tuple[str, str, str], str, str, str, str]],
 ) -> list[tuple[bool, str]]:
     """Пакетное добавление товаров — одно чтение и одна запись.
 
     Четвёртый элемент каждой записи — значение столбца «Мастер файл».
+    Пятый — значение столбца «Клиентский блок».
     Если столбец есть в справочнике, значение обязательно.
     """
     label = get_reference_label(REF_CATEGORIES)
@@ -175,6 +179,7 @@ def batch_add_products_to_reference(
     cat_col = get_category_source_column(df)
     razrez_col = get_razrez_source_column(df) or "Разрез"
     master_col = find_master_category_column(df)
+    client_block_col = find_client_block_category_column(df)
 
     results: list[tuple[bool, str]] = []
     rows_to_append: list[dict[str, object]] = []
@@ -188,7 +193,7 @@ def batch_add_products_to_reference(
         ).tolist()
     )
 
-    for product_levels, category, razrez, master_category in items:
+    for product_levels, category, razrez, master_category, client_block_category in items:
         p2, p3, p4 = (
             str(product_levels[0]).strip(),
             str(product_levels[1]).strip(),
@@ -197,6 +202,7 @@ def batch_add_products_to_reference(
         category_value = str(category).strip()
         razrez_value = str(razrez).strip()
         master_value = str(master_category).strip()
+        client_block_value = str(client_block_category).strip()
 
         if not category_value:
             results.append(
@@ -209,6 +215,15 @@ def batch_add_products_to_reference(
                     False,
                     f"Для товара «{p2} / {p3} / {p4}» не выбрана категория "
                     "столбца «Мастер файл».",
+                )
+            )
+            continue
+        if client_block_col is not None and not client_block_value:
+            results.append(
+                (
+                    False,
+                    f"Для товара «{p2} / {p3} / {p4}» не выбрана категория "
+                    "столбца «Клиентский блок».",
                 )
             )
             continue
@@ -231,6 +246,8 @@ def batch_add_products_to_reference(
         new_row[razrez_col] = razrez_value
         if master_col is not None:
             new_row[master_col] = master_value
+        if client_block_col is not None:
+            new_row[client_block_col] = client_block_value
         rows_to_append.append(new_row)
         existing_keys.add(new_key)
         results.append((True, f"Добавлен товар «{p2} / {p3} / {p4}»."))
@@ -258,8 +275,17 @@ def add_product_to_reference(
     category: str,
     razrez: str,
     master_category: str = "",
+    client_block_category: str = "",
 ) -> tuple[bool, str]:
     results = batch_add_products_to_reference(
-        [(product_levels, category, razrez, master_category)]
+        [
+            (
+                product_levels,
+                category,
+                razrez,
+                master_category,
+                client_block_category,
+            )
+        ]
     )
     return results[0] if results else (False, "Нет данных для добавления.")

@@ -73,7 +73,10 @@ from data.references import (
 )
 from features.master_file import (
     build_master_file_table,
+    client_block_category_options,
+    find_client_block_category_column,
     find_master_category_column,
+    map_client_block_categories,
     master_category_options,
     master_file_week_number,
 )
@@ -773,11 +776,17 @@ def render_special_retail_dashboard(
             ),
             unsafe_allow_html=True,
         )
+        if find_client_block_category_column(categories_df) is None:
+            st.error(
+                "В справочнике категорий нет столбца «Клиентский блок». "
+                "Категории в таблице ниже останутся пустыми."
+            )
         client_block_df = _build_client_block_table(
             spec_df,
             get_client_block_week_number(
                 _client_block_default_week_from_spec(spec_df)
             ),
+            categories_df,
         )
         _client_height = _table_height_from_rows(4)
         st.dataframe(
@@ -1268,18 +1277,23 @@ def _render_quick_reference_update(
                 "<div style='font-size:20px; font-weight:700; text-transform:uppercase; margin:10px 0 10px 0;'>Новые товары:</div>",
                 unsafe_allow_html=True,
             )
-            header_product_col, header_controls_col = st.columns([1, 2.6], gap="small")
+            header_product_col, header_controls_col = st.columns([1, 3.8], gap="small")
             with header_product_col:
                 st.markdown("**Товар**")
             with header_controls_col:
-                c1, c2, c3 = st.columns([1.15, 0.9, 1.15], gap="small")
+                c1, c2, c3, c4 = st.columns([1.05, 0.85, 1.05, 1.15], gap="small")
                 c1.markdown("**Категория**")
                 c2.markdown("**Разрез (необязательно)**")
                 c3.markdown("**Мастер файл**")
+                c4.markdown("**Клиентский блок**")
             master_options = master_category_options(categories_df)
             has_master_column = find_master_category_column(categories_df) is not None
+            client_block_options = client_block_category_options(categories_df)
+            has_client_block_column = (
+                find_client_block_category_column(categories_df) is not None
+            )
             for idx, (prod2, prod3, prod4) in enumerate(unmatched_products):
-                product_col, controls_col = st.columns([1, 2.6], gap="small")
+                product_col, controls_col = st.columns([1, 3.8], gap="small")
                 title = " / ".join(
                     [p for p in [prod2, prod3, prod4] if p and p != "__NONE__"]
                 )
@@ -1287,8 +1301,8 @@ def _render_quick_reference_update(
                     st.markdown(f"`{title}`")
 
                 with controls_col:
-                    category_col, razrez_col_ui, master_col_ui = st.columns(
-                        [1.15, 0.9, 1.15], gap="small"
+                    category_col, razrez_col_ui, master_col_ui, client_block_col_ui = (
+                        st.columns([1.05, 0.85, 1.05, 1.15], gap="small")
                     )
                     with category_col:
                         st.selectbox(
@@ -1316,6 +1330,19 @@ def _render_quick_reference_update(
                                 label_visibility="collapsed",
                             )
                         elif has_master_column:
+                            st.caption("Нет значений")
+                        else:
+                            st.caption("Нет столбца")
+                    with client_block_col_ui:
+                        if has_client_block_column and client_block_options:
+                            st.selectbox(
+                                f"Клиентский блок для товара #{idx + 1}",
+                                options=client_block_options,
+                                index=0,
+                                key=f"new_product_client_block_{idx}",
+                                label_visibility="collapsed",
+                            )
+                        elif has_client_block_column:
                             st.caption("Нет значений")
                         else:
                             st.caption("Нет столбца")
@@ -1398,6 +1425,7 @@ def _render_quick_reference_update(
                 st.session_state.get(f"new_product_category_{idx}", ""),
                 st.session_state.get(f"new_product_razrez_{idx}", ""),
                 st.session_state.get(f"new_product_master_{idx}", ""),
+                st.session_state.get(f"new_product_client_block_{idx}", ""),
             )
             for idx, product_levels in enumerate(unmatched_products)
         ]
@@ -1406,7 +1434,13 @@ def _render_quick_reference_update(
             batch_add_products_to_reference(product_items),
             strict=True,
         ):
-            product_levels, selected_category, selected_razrez, selected_master = item
+            (
+                product_levels,
+                selected_category,
+                selected_razrez,
+                selected_master,
+                selected_client_block,
+            ) = item
             if ok:
                 references_changed = True
                 products_added += 1
@@ -1419,6 +1453,8 @@ def _render_quick_reference_update(
                     dist_parts.append(f"Разрез: {selected_razrez}")
                 if str(selected_master).strip():
                     dist_parts.append(f"Мастер файл: {selected_master}")
+                if str(selected_client_block).strip():
+                    dist_parts.append(f"Клиентский блок: {selected_client_block}")
                 _append_reference_addition(
                     "Товар",
                     product_title,
@@ -1905,19 +1941,26 @@ def _resolved_client_name(df: pd.DataFrame) -> pd.Series:
     return groups.where(use_group, clients)
 
 
+def _client_block_category(spec_df: pd.DataFrame, categories_df: pd.DataFrame) -> pd.Series:
+    """Категория клиентского блока по «Товар ур.4» и столбцу «Клиентский блок»."""
+    if "Товар ур.4" not in spec_df.columns:
+        return pd.Series("", index=spec_df.index)
+    return map_client_block_categories(spec_df["Товар ур.4"], categories_df)
+
+
 def _client_block_aggregated(
     spec_df: pd.DataFrame,
     week_number: int | None,
+    categories_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Суммы по клиенту и категории. Неделя — значение поля «Актуальная неделя»."""
+    """Суммы по клиенту и категории столбца «Клиентский блок».
+
+    Неделя — значение поля «Актуальная неделя». Категория берётся по «Товар ур.4».
+    """
     if spec_df.empty:
         return pd.DataFrame(columns=_CLIENT_BLOCK_COLUMNS)
 
-    category = (
-        spec_df["Категория агрег."].fillna("").astype(str).str.strip()
-        if "Категория агрег." in spec_df.columns
-        else pd.Series("", index=spec_df.index)
-    )
+    category = _client_block_category(spec_df, categories_df)
     frame = pd.DataFrame(
         {
             "Клиент": _resolved_client_name(spec_df),
@@ -1946,9 +1989,10 @@ def _client_block_aggregated(
 def _build_client_block_table(
     spec_df: pd.DataFrame,
     week_number: int | None,
+    categories_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Клиентский блок на экране: клиент, категория, актуальная неделя и суммы."""
-    grouped = _client_block_aggregated(spec_df, week_number)
+    grouped = _client_block_aggregated(spec_df, week_number, categories_df)
     if grouped.empty:
         return pd.DataFrame(columns=_CLIENT_BLOCK_COLUMNS)
     return pd.DataFrame(
@@ -1966,9 +2010,10 @@ def _build_client_block_table(
 def _build_client_block_export_table(
     spec_df: pd.DataFrame,
     week_number: int | None,
+    categories_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Лист Excel «Клиентский блок»: те же колонки, числа без текстового формата."""
-    grouped = _client_block_aggregated(spec_df, week_number)
+    grouped = _client_block_aggregated(spec_df, week_number, categories_df)
     if grouped.empty:
         return pd.DataFrame(columns=_CLIENT_BLOCK_COLUMNS)
     return grouped[_CLIENT_BLOCK_COLUMNS].copy()
@@ -2590,7 +2635,7 @@ def _build_report_excel(
             category_order_df=category_order_df,
         )
         client_block_export = _build_client_block_export_table(
-            spec_df, client_block_week
+            spec_df, client_block_week, categories_df
         )
 
         finance_sheet = _stack_tables_with_titles(
