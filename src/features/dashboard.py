@@ -458,8 +458,9 @@ def render_global_rnp_inputs() -> None:
             label_visibility="collapsed",
             placeholder="",
             help=(
-                "Номер отчётной недели (1–53). Влияет на имя Excel-отчёта. "
-                "Если поле пустое, используется неделя из загруженных продаж."
+                "Номер отчётной недели (1–53). Подставляется в столбец «Неделя» "
+                "клиентского блока и в имя Excel-отчёта. Если поле пустое, "
+                "используется неделя из загруженных продаж."
             ),
         )
 
@@ -604,6 +605,7 @@ def render_special_retail_dashboard(
         categories_fallback_df=categories_df,
         category_order_fallback_df=category_order_df,
         excise_level3_keys=excise_level3_keys,
+        client_block_week=_excel_week_num,
     )
     _inject_dashboard_styles()
 
@@ -755,7 +757,12 @@ def render_special_retail_dashboard(
             ),
             unsafe_allow_html=True,
         )
-        client_block_df = _build_client_block_table(spec_df)
+        client_block_df = _build_client_block_table(
+            spec_df,
+            get_client_block_week_number(
+                _client_block_default_week_from_spec(spec_df)
+            ),
+        )
         _client_height = _table_height_from_rows(4)
         st.dataframe(
             client_block_df,
@@ -1788,22 +1795,6 @@ _CLIENT_BLOCK_COLUMNS = [
 _EMPTY_COUNTERPARTY_GROUPS = frozenset({"", "-", "—", "–", "―", "‑"})
 
 
-def _format_week_cell(value: object) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return ""
-    if isinstance(value, str) and not value.strip():
-        return ""
-    try:
-        num = float(value)
-    except (TypeError, ValueError):
-        return str(value).strip()
-    if pd.isna(num):
-        return ""
-    if num == int(num):
-        return str(int(num))
-    return str(value).strip()
-
-
 def _resolved_client_name(df: pd.DataFrame) -> pd.Series:
     """Итоговое имя: группа контрагентов, если она задана, иначе клиент."""
     clients = (
@@ -1820,16 +1811,14 @@ def _resolved_client_name(df: pd.DataFrame) -> pd.Series:
     return groups.where(use_group, clients)
 
 
-def _client_block_aggregated(spec_df: pd.DataFrame) -> pd.DataFrame:
-    """Суммы продаж, маржи и количества по клиенту, категории и неделе."""
+def _client_block_aggregated(
+    spec_df: pd.DataFrame,
+    week_number: int | None,
+) -> pd.DataFrame:
+    """Суммы по клиенту и категории. Неделя — значение поля «Актуальная неделя»."""
     if spec_df.empty:
         return pd.DataFrame(columns=_CLIENT_BLOCK_COLUMNS)
 
-    week_col = _find_week_column_name(spec_df)
-    if week_col:
-        week = spec_df[week_col].map(_format_week_cell)
-    else:
-        week = pd.Series("", index=spec_df.index)
     category = (
         spec_df["Категория агрег."].fillna("").astype(str).str.strip()
         if "Категория агрег." in spec_df.columns
@@ -1839,7 +1828,6 @@ def _client_block_aggregated(spec_df: pd.DataFrame) -> pd.DataFrame:
         {
             "Клиент": _resolved_client_name(spec_df),
             "Категория товара": category,
-            "Неделя": week,
             "Продажи с НДС": pd.to_numeric(
                 spec_df.get("Продажи с НДС", 0.0), errors="coerce"
             ).fillna(0.0),
@@ -1850,21 +1838,23 @@ def _client_block_aggregated(spec_df: pd.DataFrame) -> pd.DataFrame:
         }
     )
     grouped = frame.groupby(
-        ["Клиент", "Категория товара", "Неделя"], dropna=False, as_index=False
+        ["Клиент", "Категория товара"], dropna=False, as_index=False
     )[["Продажи с НДС", "Маржа", "Количество"]].sum()
-    grouped["_week_sort"] = pd.to_numeric(grouped["Неделя"], errors="coerce")
+    grouped.insert(2, "Неделя", "" if week_number is None else str(int(week_number)))
     grouped = grouped.sort_values(
-        ["Клиент", "Категория товара", "_week_sort"],
+        ["Клиент", "Категория товара"],
         ascending=True,
         kind="stable",
-        na_position="last",
-    ).drop(columns="_week_sort")
+    )
     return grouped.reset_index(drop=True)
 
 
-def _build_client_block_table(spec_df: pd.DataFrame) -> pd.DataFrame:
-    """Клиентский блок на экране: клиент, категория, неделя и суммы."""
-    grouped = _client_block_aggregated(spec_df)
+def _build_client_block_table(
+    spec_df: pd.DataFrame,
+    week_number: int | None,
+) -> pd.DataFrame:
+    """Клиентский блок на экране: клиент, категория, актуальная неделя и суммы."""
+    grouped = _client_block_aggregated(spec_df, week_number)
     if grouped.empty:
         return pd.DataFrame(columns=_CLIENT_BLOCK_COLUMNS)
     return pd.DataFrame(
@@ -1879,9 +1869,12 @@ def _build_client_block_table(spec_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _build_client_block_export_table(spec_df: pd.DataFrame) -> pd.DataFrame:
+def _build_client_block_export_table(
+    spec_df: pd.DataFrame,
+    week_number: int | None,
+) -> pd.DataFrame:
     """Лист Excel «Клиентский блок»: те же колонки, числа без текстового формата."""
-    grouped = _client_block_aggregated(spec_df)
+    grouped = _client_block_aggregated(spec_df, week_number)
     if grouped.empty:
         return pd.DataFrame(columns=_CLIENT_BLOCK_COLUMNS)
     return grouped[_CLIENT_BLOCK_COLUMNS].copy()
@@ -2394,6 +2387,7 @@ def _build_report_excel(
     categories_fallback_df: pd.DataFrame,
     category_order_fallback_df: pd.DataFrame | None = None,
     excise_level3_keys: set[str] | None = None,
+    client_block_week: int | None = None,
 ) -> bytes | None:
     contractors_df = _read_latest_reference(REF_CONTRACTORS, contractors_fallback_df)
     categories_df = _read_latest_reference(REF_CATEGORIES, categories_fallback_df)
@@ -2501,7 +2495,9 @@ def _build_report_excel(
             receivables_df=receivables_df,
             category_order_df=category_order_df,
         )
-        client_block_export = _build_client_block_export_table(spec_df)
+        client_block_export = _build_client_block_export_table(
+            spec_df, client_block_week
+        )
 
         finance_sheet = _stack_tables_with_titles(
             [
@@ -2575,6 +2571,7 @@ def _build_full_report_excel(
     categories_fallback_df: pd.DataFrame,
     category_order_fallback_df: pd.DataFrame | None = None,
     excise_level3_keys: set[str] | None = None,
+    client_block_week: int | None = None,
 ) -> bytes | None:
     """Обратная совместимость: полный отчёт при наличии продаж."""
     return _build_report_excel(
@@ -2588,6 +2585,7 @@ def _build_full_report_excel(
         categories_fallback_df=categories_fallback_df,
         category_order_fallback_df=category_order_fallback_df,
         excise_level3_keys=excise_level3_keys,
+        client_block_week=client_block_week,
     )
 
 
