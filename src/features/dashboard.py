@@ -78,7 +78,6 @@ from features.master_file import (
     find_master_category_column,
     map_client_block_categories,
     master_category_options,
-    master_file_week_number,
 )
 from features.hardware_sales_dynamics import (
     HARDWARE_CATEGORY_OPTIONS,
@@ -406,7 +405,11 @@ def _render_standalone_report_sections(
                 table_height=_table_height_from_rows(6),
             )
 
-    if _render_master_file_block(master_df, categories_df):
+    if _render_master_file_block(
+        master_df,
+        categories_df,
+        _master_file_week_number(sales_with_categories_df),
+    ):
         rendered = True
 
     if cash_inflow_df is not None:
@@ -472,10 +475,8 @@ def render_global_rnp_inputs() -> None:
             placeholder="",
             help=(
                 "Номер отчётной недели (1–53). Подставляется в столбец «Неделя» "
-                "клиентского блока и в имя Excel-отчёта. Если загружен мастер-файл, "
-                "при «Загрузить данные» сюда ставится неделя из него. "
-                "Значение можно изменить. Если поле пустое и мастер-файла нет, "
-                "используется неделя из загруженных продаж."
+                "клиентского блока, блока «Мастер файл» и в имя Excel-отчёта. "
+                "Если поле пустое, используется неделя из загруженных продаж."
             ),
         )
 
@@ -557,9 +558,7 @@ def render_special_retail_dashboard(
     cash_inflow_df: pd.DataFrame | None = None,
     coal_weights_df: pd.DataFrame | None = None,
     master_df: pd.DataFrame | None = None,
-    master_file_token: str | None = None,
 ) -> None:
-    _prefill_client_week_from_master(master_df, master_file_token)
     has_sales = sales_df is not None and not sales_df.empty
     new_clients: list[str] = []
     unmatched_products: list[tuple[str, str, str]] = []
@@ -831,7 +830,13 @@ def render_special_retail_dashboard(
                     },
                 )
 
-        _render_master_file_block(master_df, categories_df)
+        _render_master_file_block(
+            master_df,
+            categories_df,
+            get_client_block_week_number(
+                _client_block_default_week_from_spec(spec_df)
+            ),
+        )
 
         st.markdown("---")
         with st.container():
@@ -938,34 +943,18 @@ def render_special_retail_dashboard(
         )
 
 
-def _prefill_client_week_from_master(
-    master_df: pd.DataFrame | None,
-    file_token: str | None,
-) -> None:
-    """Ставит неделю из мастер-файла, если файл новый или поле ещё пустое.
-
-    Ручная правка сохраняется, пока не нажата «Загрузить данные»
-    и пока не подложен другой файл.
-    """
-    if not file_token:
-        return
-    try:
-        week = master_file_week_number(master_df)
-        if week is None:
-            return
-        token_key = "_master_file_week_token"
-        key_missing = CLIENT_BLOCK_WEEK_INPUT_KEY not in st.session_state
-        file_changed = st.session_state.get(token_key) != file_token
-        if key_missing or file_changed:
-            st.session_state[CLIENT_BLOCK_WEEK_INPUT_KEY] = str(week)
-            st.session_state[token_key] = file_token
-    except Exception:
-        return
+def _master_file_week_number(sales_df: pd.DataFrame | None) -> int:
+    """Неделя мастер-файла: поле «Актуальная неделя», иначе неделя из продаж."""
+    fallback = 1
+    if sales_df is not None and not sales_df.empty:
+        fallback = _client_block_default_week_from_spec(sales_df)
+    return get_client_block_week_number(fallback)
 
 
 def _render_master_file_block(
     master_df: pd.DataFrame | None,
     categories_df: pd.DataFrame,
+    week_number: int | None,
 ) -> bool:
     """Таблица мастер-файла. Возвращает True, если блок показан."""
     if master_df is None:
@@ -975,7 +964,7 @@ def _render_master_file_block(
         unsafe_allow_html=True,
     )
     try:
-        table = build_master_file_table(master_df, categories_df)
+        table = build_master_file_table(master_df, categories_df, week_number)
     except (ValueError, TypeError, KeyError) as exc:
         st.error(str(exc))
         return True
@@ -1942,10 +1931,8 @@ def _resolved_client_name(df: pd.DataFrame) -> pd.Series:
 
 
 def _client_block_category(spec_df: pd.DataFrame, categories_df: pd.DataFrame) -> pd.Series:
-    """Категория клиентского блока по «Товар ур.4» и столбцу «Клиентский блок»."""
-    if "Товар ур.4" not in spec_df.columns:
-        return pd.Series("", index=spec_df.index)
-    return map_client_block_categories(spec_df["Товар ур.4"], categories_df)
+    """Категория клиентского блока: тройка уровней, затем ур.2+ур.3 или ур.4."""
+    return map_client_block_categories(spec_df, categories_df)
 
 
 def _client_block_aggregated(
@@ -1955,7 +1942,8 @@ def _client_block_aggregated(
 ) -> pd.DataFrame:
     """Суммы по клиенту и категории столбца «Клиентский блок».
 
-    Неделя — значение поля «Актуальная неделя». Категория берётся по «Товар ур.4».
+    Неделя — значение поля «Актуальная неделя». Категория берётся по товару:
+    ур.2 + ур.3 + ур.4, при прочерке в ур.4 — по ур.2 и ур.3.
     """
     if spec_df.empty:
         return pd.DataFrame(columns=_CLIENT_BLOCK_COLUMNS)

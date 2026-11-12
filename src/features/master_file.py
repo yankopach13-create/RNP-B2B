@@ -7,8 +7,12 @@ from datetime import datetime
 import pandas as pd
 
 from features.data_prep import (
+    PRODUCT_COLUMNS,
     _level4_match_key,
+    _normalise_product_columns,
     _rename_product_level_columns,
+    merge_product_categories,
+    product_level3_key,
 )
 from features.render import _format_money_compact, _format_quantity_compact
 
@@ -35,12 +39,18 @@ _EMPTY_COUNTERPARTY_GROUPS = frozenset({"", "-", "—", "–", "―", "‑"})
 _REQUIRED_COLUMNS = (
     "Клиент",
     "Группа контрагентов",
+    "Товар ур.3",
     "Товар ур.4",
     "Месяц",
-    "Неделя",
     "Продажи с НДС",
     "Маржа",
     "Количество",
+)
+_LEVEL3_HEADER_KEYS = frozenset(
+    {"товар ур.3", "товар ур. 3", "товар3", "товар 3", "товар.ур.3"}
+)
+_LEVEL4_HEADER_KEYS = frozenset(
+    {"товар ур.4", "товар ур. 4", "товар4", "товар 4", "товар.ур.4", "товар ур4"}
 )
 
 
@@ -91,33 +101,16 @@ def client_block_category_options(categories_df: pd.DataFrame) -> list[str]:
     return _labeled_category_options(categories_df, CLIENT_BLOCK_CATEGORY_COLUMN)
 
 
-def master_file_week_number(master_df: pd.DataFrame | None) -> int | None:
-    """Номер недели из мастер-файла. В файле ожидается одна неделя."""
-    if master_df is None or master_df.empty:
-        return None
-    try:
-        prepared = _prepare_master_frame(master_df)
-    except (TypeError, ValueError):
-        return None
-    week_series = _column_series(prepared, "Неделя")
-    if week_series is None or pd.api.types.is_datetime64_any_dtype(week_series):
-        return None
-    numbers = _coerce_numbers(week_series).dropna()
-    for value in numbers.tolist():
-        week = _as_week_number(value)
-        if week is not None:
-            return week
-    return None
-
-
 def build_master_file_table(
     master_df: pd.DataFrame,
     categories_df: pd.DataFrame,
+    week_number: int | None,
 ) -> pd.DataFrame:
     """Суммы по конечному клиенту, месяцу, неделе и категории мастер-файла.
 
     Конечный клиент — «Группа контрагентов», если она заполнена, иначе «Клиент».
-    Категория берётся по «Товар ур.4». Если у одного товара в справочнике
+    Неделя — номер из поля «Актуальная неделя», в файле её нет.
+    Категория берётся по «Товар ур.3» и «Товар ур.4». Если у одной пары
     несколько значений, остаётся первое непустое.
     """
     if master_df is None or master_df.empty:
@@ -130,26 +123,31 @@ def build_master_file_table(
             "В мастер-файле нет столбцов: " + ", ".join(missing) + "."
         )
 
-    lookup = _master_category_by_level4(categories_df)
+    lookup = _master_category_by_level34(categories_df)
     category_column = find_master_category_column(categories_df)
     if category_column is None:
         raise ValueError(
             "В справочнике категорий нет столбца «Мастер файл»."
         )
 
+    level3_values = _column_series(prepared, "Товар ур.3").tolist()
+    level4_values = _column_series(prepared, "Товар ур.4").tolist()
+    categories = [
+        lookup.get(key, "") if (key := _product_pair_key(level3, level4)) else ""
+        for level3, level4 in zip(level3_values, level4_values)
+    ]
+    week_label = "" if week_number is None else str(int(week_number))
     frame = pd.DataFrame(
         {
             "Клиент": _resolved_client_name(prepared),
             "Месяц": prepared["Месяц"].map(_month_label),
-            "Неделя": prepared["Неделя"].map(_week_label),
+            "Неделя": week_label,
             "Продажи с НДС": _coerce_numbers(
                 _column_series(prepared, "Продажи с НДС")
             ),
             "Маржа": _coerce_numbers(_column_series(prepared, "Маржа")),
             "Количество": _coerce_numbers(_column_series(prepared, "Количество")),
-            "Категория товара": _column_series(prepared, "Товар ур.4").map(
-                lambda value: lookup.get(_level4_match_key(value), "")
-            ),
+            "Категория товара": categories,
         }
     )
     frame = frame[frame["Клиент"].ne("")]
@@ -219,7 +217,8 @@ def _has_required_columns(df: pd.DataFrame) -> bool:
 
 def _row_has_required_headers(headers: list[str]) -> bool:
     folded = {header.casefold() for header in headers if header}
-    return {"клиент", "товар ур.4", "продажи с ндс"} <= folded
+    has_levels = bool(folded & _LEVEL3_HEADER_KEYS) and bool(folded & _LEVEL4_HEADER_KEYS)
+    return {"клиент", "продажи с ндс"} <= folded and has_levels
 
 
 def _drop_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -279,16 +278,6 @@ def _parse_number_text(value: object) -> object:
     return text
 
 
-def _as_week_number(value: object) -> int | None:
-    try:
-        week = int(round(float(value)))
-    except (TypeError, ValueError, OverflowError):
-        return None
-    if week < 1 or week > 53:
-        return None
-    return week
-
-
 def _format_money_cell(value: object) -> str:
     return _format_money_compact(_as_float(value))
 
@@ -315,49 +304,115 @@ def _resolved_client_name(df: pd.DataFrame) -> pd.Series:
     return groups.where(use_group, clients)
 
 
-def category_lookup_by_level4(
+def _product_pair_key(level3: object, level4: object) -> tuple[str, str] | None:
+    """Ключ «Товар ур.3» + «Товар ур.4». Пустая пара не участвует в поиске."""
+    level3_key = product_level3_key(level3)
+    if level3_key in {"__none__", "nan", "none"}:
+        level3_key = ""
+    level4_key = _level4_match_key(level4)
+    if not level3_key and not level4_key:
+        return None
+    return level3_key, level4_key
+
+
+def _master_category_by_level34(
     categories_df: pd.DataFrame,
-    label: str,
-) -> dict[str, str]:
-    """Первая непустая категория столбца для каждого «Товар ур.4»."""
+) -> dict[tuple[str, str], str]:
+    """Первая непустая категория «Мастер файл» для пары «Товар ур.3» и «Товар ур.4»."""
     if categories_df is None or categories_df.empty:
         return {}
     prepared = categories_df.copy()
     prepared.columns = [str(col).strip() for col in prepared.columns]
     prepared = _rename_product_level_columns(prepared)
-    column = find_labeled_column(prepared, label)
-    if column is None or "Товар ур.4" not in prepared.columns:
+    column = find_labeled_column(prepared, MASTER_CATEGORY_COLUMN)
+    if (
+        column is None
+        or "Товар ур.3" not in prepared.columns
+        or "Товар ур.4" not in prepared.columns
+    ):
         return {}
-    lookup: dict[str, str] = {}
+    lookup: dict[tuple[str, str], str] = {}
+    level3_values = _column_series(prepared, "Товар ур.3").tolist()
     level4_values = _column_series(prepared, "Товар ур.4").tolist()
     category_values = _column_series(prepared, column).tolist()
-    for level4, raw_category in zip(level4_values, category_values):
-        key = _level4_match_key(level4)
-        if not key or key in lookup:
+    for level3, level4, raw_category in zip(level3_values, level4_values, category_values):
+        key = _product_pair_key(level3, level4)
+        if key is None or key in lookup:
             continue
-        if raw_category is None or (
-            isinstance(raw_category, float) and pd.isna(raw_category)
-        ):
-            continue
-        category = str(raw_category).strip()
-        if not category or category.casefold() in {"nan", "none"}:
+        category = _category_cell_text(raw_category)
+        if not category:
             continue
         lookup[key] = category
     return lookup
 
 
-def _master_category_by_level4(categories_df: pd.DataFrame) -> dict[str, str]:
-    """Первая непустая категория «Мастер файл» для каждого «Товар ур.4»."""
-    return category_lookup_by_level4(categories_df, MASTER_CATEGORY_COLUMN)
-
-
 def map_client_block_categories(
-    level4: pd.Series,
+    sales_df: pd.DataFrame,
     categories_df: pd.DataFrame,
 ) -> pd.Series:
-    """Категория столбца «Клиентский блок» по «Товар ур.4». Нет совпадения — пустая строка."""
-    lookup = category_lookup_by_level4(categories_df, CLIENT_BLOCK_CATEGORY_COLUMN)
-    return level4.map(lambda value: lookup.get(_level4_match_key(value), ""))
+    """Категория столбца «Клиентский блок» для строк продаж.
+
+    Сначала «Товар ур.2» + «Товар ур.3» + «Товар ур.4».
+    Если ур.4 пустой или прочерк — по ур.2 и ур.3 среди таких же строк справочника.
+    Если ур.4 заполнен и точной тройки нет — только по ур.4.
+    Пустые ячейки столбца пропускаются, остаётся первое непустое значение.
+    Нет совпадения — пустая строка.
+    """
+    empty = pd.Series("", index=sales_df.index, dtype="string")
+    if sales_df is None or sales_df.empty:
+        return empty
+    lookup = _client_block_category_lookup(categories_df)
+    if lookup.empty:
+        return empty
+
+    sales = _normalise_product_columns(_rename_product_level_columns(sales_df.copy()))
+    if any(column not in sales.columns for column in PRODUCT_COLUMNS):
+        return empty
+
+    merged = merge_product_categories(
+        sales,
+        lookup,
+        value_cols=(CLIENT_BLOCK_CATEGORY_COLUMN,),
+    )
+    categories = (
+        merged[CLIENT_BLOCK_CATEGORY_COLUMN].fillna("").astype(str).str.strip()
+    )
+    categories.index = sales_df.index
+    return categories
+
+
+def _client_block_category_lookup(categories_df: pd.DataFrame) -> pd.DataFrame:
+    """Строки справочника с непустым «Клиентский блок» и нормализованными уровнями товара."""
+    columns = PRODUCT_COLUMNS + [CLIENT_BLOCK_CATEGORY_COLUMN]
+    empty = pd.DataFrame(columns=columns)
+    if categories_df is None or categories_df.empty:
+        return empty
+    if find_client_block_category_column(categories_df) is None:
+        return empty
+
+    prepared = categories_df.copy()
+    prepared.columns = [str(col).strip() for col in prepared.columns]
+    prepared = _normalise_product_columns(_rename_product_level_columns(prepared))
+    column = find_client_block_category_column(prepared)
+    if column is None or any(name not in prepared.columns for name in PRODUCT_COLUMNS):
+        return empty
+
+    cleaned = _column_series(prepared, column).map(_category_cell_text)
+    filled = prepared.loc[cleaned.ne("")].copy()
+    if filled.empty:
+        return empty
+    filled[CLIENT_BLOCK_CATEGORY_COLUMN] = cleaned.loc[filled.index].to_numpy()
+    return filled[columns].drop_duplicates(subset=PRODUCT_COLUMNS, keep="first")
+
+
+def _category_cell_text(value: object) -> str:
+    """Текст ячейки категории. Пустые и служебные значения — пустая строка."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).strip()
+    if not text or text.casefold() in {"nan", "none", "<na>"}:
+        return ""
+    return text
 
 
 def _month_label(value: object) -> str:
@@ -375,21 +430,6 @@ def _month_label(value: object) -> str:
         parsed = pd.to_datetime(text, errors="coerce")
         if pd.notna(parsed):
             return parsed.strftime("%m.%Y")
-    return text
-
-
-def _week_label(value: object) -> str:
-    """Номер недели без дробной части. Даты и пустые ячейки остаются пустыми."""
-    if isinstance(value, (pd.Timestamp, datetime)):
-        return ""
-    week = _as_week_number(value)
-    if week is not None:
-        return str(week)
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return ""
-    text = str(value).strip()
-    if text.casefold() in {"nan", "none", "<na>", "nat"}:
-        return ""
     return text
 
 

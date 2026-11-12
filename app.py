@@ -73,15 +73,6 @@ def _read_excel(uploaded_file, description: str) -> pd.DataFrame | None:
         return None
 
 
-def _uploaded_file_token(uploaded_file) -> str | None:
-    """Метка файла, чтобы неделю из мастер-файла подставлять только при смене файла."""
-    if uploaded_file is None:
-        return None
-    name = str(getattr(uploaded_file, "name", "") or "")
-    size = str(getattr(uploaded_file, "size", "") or "")
-    return f"{name}:{size}"
-
-
 def _render_uploader_help(image_name: str, caption: str = "") -> None:
     with st.popover("Инфо"):
         if caption:
@@ -139,8 +130,9 @@ def main() -> None:
             type=["xlsx", "xls"],
             key="master_file_uploader",
             help=(
-                "Столбцы: Клиент, Группа контрагентов, Товар ур.4, Месяц, Неделя, "
-                "Продажи с НДС, Маржа, Количество."
+                "Столбцы: Клиент, Группа контрагентов, Товар ур.3, Товар ур.4, "
+                "Месяц, Продажи с НДС, Маржа, Количество. "
+                "Неделя берётся из поля «Актуальная неделя»."
             ),
         )
 
@@ -472,7 +464,6 @@ def main() -> None:
         receivables_df=receivables_df,
         cash_inflow_df=cash_inflow_df,
         master_df=master_df,
-        master_file_token=_uploaded_file_token(master_file),
     )
 
 
