@@ -940,15 +940,18 @@ def _prefill_client_week_from_master(
     """
     if not file_token:
         return
-    week = master_file_week_number(master_df)
-    if week is None:
+    try:
+        week = master_file_week_number(master_df)
+        if week is None:
+            return
+        token_key = "_master_file_week_token"
+        key_missing = CLIENT_BLOCK_WEEK_INPUT_KEY not in st.session_state
+        file_changed = st.session_state.get(token_key) != file_token
+        if key_missing or file_changed:
+            st.session_state[CLIENT_BLOCK_WEEK_INPUT_KEY] = str(week)
+            st.session_state[token_key] = file_token
+    except Exception:
         return
-    token_key = "_master_file_week_token"
-    key_missing = CLIENT_BLOCK_WEEK_INPUT_KEY not in st.session_state
-    file_changed = st.session_state.get(token_key) != file_token
-    if key_missing or file_changed:
-        st.session_state[CLIENT_BLOCK_WEEK_INPUT_KEY] = str(week)
-        st.session_state[token_key] = file_token
 
 
 def _render_master_file_block(
@@ -964,7 +967,7 @@ def _render_master_file_block(
     )
     try:
         table = build_master_file_table(master_df, categories_df)
-    except ValueError as exc:
+    except (ValueError, TypeError, KeyError) as exc:
         st.error(str(exc))
         return True
     if table.empty:

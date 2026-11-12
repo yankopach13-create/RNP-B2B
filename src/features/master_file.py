@@ -56,12 +56,10 @@ def master_category_options(categories_df: pd.DataFrame) -> list[str]:
     column = find_master_category_column(categories_df)
     if column is None:
         return []
-    values = (
-        categories_df[column]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-    )
+    values_column = categories_df[column]
+    if isinstance(values_column, pd.DataFrame):
+        values_column = values_column.iloc[:, 0]
+    values = values_column.fillna("").astype(str).str.strip()
     cleaned = {
         value
         for value in values.tolist()
@@ -74,16 +72,19 @@ def master_file_week_number(master_df: pd.DataFrame | None) -> int | None:
     """Номер недели из мастер-файла. В файле ожидается одна неделя."""
     if master_df is None or master_df.empty:
         return None
-    prepared = _prepare_master_frame(master_df)
-    if "Неделя" not in prepared.columns:
+    try:
+        prepared = _prepare_master_frame(master_df)
+    except (TypeError, ValueError):
         return None
-    numbers = pd.to_numeric(prepared["Неделя"], errors="coerce").dropna()
-    if numbers.empty:
+    week_series = _column_series(prepared, "Неделя")
+    if week_series is None or pd.api.types.is_datetime64_any_dtype(week_series):
         return None
-    week = int(round(float(numbers.iloc[0])))
-    if week < 1 or week > 53:
-        return None
-    return week
+    numbers = _coerce_numbers(week_series).dropna()
+    for value in numbers.tolist():
+        week = _as_week_number(value)
+        if week is not None:
+            return week
+    return None
 
 
 def build_master_file_table(
@@ -118,14 +119,12 @@ def build_master_file_table(
             "Клиент": _resolved_client_name(prepared),
             "Месяц": prepared["Месяц"].map(_month_label),
             "Неделя": prepared["Неделя"].map(_week_label),
-            "Продажи с НДС": pd.to_numeric(
-                prepared["Продажи с НДС"], errors="coerce"
-            ).fillna(0.0),
-            "Маржа": pd.to_numeric(prepared["Маржа"], errors="coerce").fillna(0.0),
-            "Количество": pd.to_numeric(
-                prepared["Количество"], errors="coerce"
-            ).fillna(0.0),
-            "Категория товара": prepared["Товар ур.4"].map(
+            "Продажи с НДС": _coerce_numbers(
+                _column_series(prepared, "Продажи с НДС")
+            ),
+            "Маржа": _coerce_numbers(_column_series(prepared, "Маржа")),
+            "Количество": _coerce_numbers(_column_series(prepared, "Количество")),
+            "Категория товара": _column_series(prepared, "Товар ур.4").map(
                 lambda value: lookup.get(_level4_match_key(value), "")
             ),
         }
@@ -151,15 +150,9 @@ def build_master_file_table(
             COLUMN_GAP_BEFORE_PERIOD: "",
             "Месяц": grouped["Месяц"],
             "Неделя": grouped["Неделя"],
-            "Продажи с НДС": grouped["Продажи с НДС"].map(
-                lambda value: _format_money_compact(float(value))
-            ),
-            "Маржа": grouped["Маржа"].map(
-                lambda value: _format_money_compact(float(value))
-            ),
-            "Количество": grouped["Количество"].map(
-                lambda value: _format_quantity_compact(float(value))
-            ),
+            "Продажи с НДС": grouped["Продажи с НДС"].map(_format_money_cell),
+            "Маржа": grouped["Маржа"].map(_format_money_cell),
+            "Количество": grouped["Количество"].map(_format_quantity_cell),
             COLUMN_GAP_BEFORE_CATEGORY: "",
             "Категория товара": grouped["Категория товара"],
         }
@@ -167,10 +160,128 @@ def build_master_file_table(
 
 
 def _prepare_master_frame(master_df: pd.DataFrame) -> pd.DataFrame:
-    """Срезает пробелы в заголовках и приводит имя столбца «Товар ур.4»."""
+    """Находит строку заголовков и оставляет по одному столбцу с каждым именем."""
     prepared = master_df.copy()
-    prepared.columns = [str(col).strip() for col in prepared.columns]
+    prepared.columns = [_header_text(col) for col in prepared.columns]
+    prepared = _promote_header_row(prepared)
+    prepared = _drop_duplicate_columns(prepared)
     return _rename_product_level_columns(prepared)
+
+
+def _header_text(value: object) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    return str(value).strip()
+
+
+def _promote_header_row(df: pd.DataFrame) -> pd.DataFrame:
+    """Если первая строка — шапка отчёта, берёт заголовки из строки с названиями столбцов."""
+    if _has_required_columns(df):
+        return df
+    limit = min(20, len(df))
+    for index in range(limit):
+        headers = [_header_text(value) for value in df.iloc[index].tolist()]
+        if not _row_has_required_headers(headers):
+            continue
+        body = df.iloc[index + 1 :].copy()
+        width = body.shape[1]
+        body.columns = (headers + [""] * width)[:width]
+        return body.reset_index(drop=True)
+    return df
+
+
+def _has_required_columns(df: pd.DataFrame) -> bool:
+    return all(column in df.columns for column in _REQUIRED_COLUMNS)
+
+
+def _row_has_required_headers(headers: list[str]) -> bool:
+    folded = {header.casefold() for header in headers if header}
+    return {"клиент", "товар ур.4", "продажи с ндс"} <= folded
+
+
+def _drop_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Повторяющиеся заголовки Excel оставляет один раз, иначе столбец читается как таблица."""
+    seen: set[str] = set()
+    keep: list[int] = []
+    for index, name in enumerate(df.columns):
+        if name in seen:
+            continue
+        seen.add(str(name))
+        keep.append(index)
+    if len(keep) == len(df.columns):
+        return df
+    trimmed = df.iloc[:, keep].copy()
+    trimmed.columns = [df.columns[index] for index in keep]
+    return trimmed
+
+
+def _column_series(df: pd.DataFrame, name: str) -> pd.Series:
+    """Один столбец. При дубле заголовка берётся первый."""
+    value = df[name]
+    if isinstance(value, pd.DataFrame):
+        value = value.iloc[:, 0]
+    return value
+
+
+def _coerce_numbers(series: pd.Series | None) -> pd.Series:
+    """Числа из Excel, в том числе текст вида «1 234,50». Сбой разбора даёт 0."""
+    if series is None:
+        return pd.Series(dtype="float64")
+    if isinstance(series, pd.DataFrame):
+        series = series.iloc[:, 0]
+    parsed = series.map(_parse_number_text)
+    try:
+        numbers = pd.to_numeric(parsed, errors="coerce")
+    except (TypeError, ValueError):
+        numbers = pd.Series(0.0, index=series.index)
+    return numbers.fillna(0.0).astype(float)
+
+
+def _parse_number_text(value: object) -> object:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return None
+    text = str(value).strip().replace("\u00a0", "").replace(" ", "")
+    if not text or text.casefold() in {"nan", "none", "<na>", "nat"}:
+        return None
+    if text.count(",") == 1 and "." not in text:
+        text = text.replace(",", ".")
+    else:
+        text = text.replace(",", "")
+    return text
+
+
+def _as_week_number(value: object) -> int | None:
+    try:
+        week = int(round(float(value)))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if week < 1 or week > 53:
+        return None
+    return week
+
+
+def _format_money_cell(value: object) -> str:
+    return _format_money_compact(_as_float(value))
+
+
+def _format_quantity_cell(value: object) -> str:
+    return _format_quantity_compact(_as_float(value))
+
+
+def _as_float(value: object) -> float:
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.0
+    if pd.isna(number):
+        return 0.0
+    return number
 
 
 def _resolved_client_name(df: pd.DataFrame) -> pd.Series:
@@ -220,7 +331,7 @@ def _month_label(value: object) -> str:
             return ""
         return value.strftime("%m.%Y")
     text = str(value).strip()
-    if not text or text.casefold() in {"nan", "nat", "none"}:
+    if not text or text.casefold() in {"nan", "nat", "none", "<na>"}:
         return ""
     if text.endswith("00:00:00"):
         parsed = pd.to_datetime(text, errors="coerce")
@@ -230,22 +341,27 @@ def _month_label(value: object) -> str:
 
 
 def _week_label(value: object) -> str:
-    """Номер недели без дробной части, если ячейка числовая."""
+    """Номер недели без дробной части. Даты и пустые ячейки остаются пустыми."""
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return ""
+    week = _as_week_number(value)
+    if week is not None:
+        return str(week)
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
-    number = pd.to_numeric(value, errors="coerce")
-    if pd.notna(number):
-        return str(int(round(float(number))))
     text = str(value).strip()
-    if text.casefold() in {"nan", "none"}:
+    if text.casefold() in {"nan", "none", "<na>", "nat"}:
         return ""
     return text
 
 
-def _month_sort_value(label: object) -> tuple[int, object]:
-    """Ключ сортировки: сначала распознанный месяц, затем текст как есть."""
+def _month_sort_value(label: object) -> str:
+    """Ключ сортировки из текста, без сравнения дат и строк между собой."""
     text = "" if label is None else str(label).strip()
-    parsed = pd.to_datetime(text, format="%m.%Y", errors="coerce")
-    if pd.notna(parsed):
-        return (0, parsed.to_pydatetime())
-    return (1, text)
+    try:
+        parsed = pd.to_datetime(text, format="%m.%Y", errors="coerce")
+    except (TypeError, ValueError):
+        return f"1|{text}"
+    if isinstance(parsed, pd.Series) or pd.isna(parsed):
+        return f"1|{text}"
+    return f"0|{pd.Timestamp(parsed).strftime('%Y-%m')}"
