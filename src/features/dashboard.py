@@ -458,7 +458,7 @@ def render_global_rnp_inputs() -> None:
             label_visibility="collapsed",
             placeholder="",
             help=(
-                "Номер отчётной недели (1–53). Влияет на клиентский блок и имя Excel-отчёта. "
+                "Номер отчётной недели (1–53). Влияет на имя Excel-отчёта. "
                 "Если поле пустое, используется неделя из загруженных продаж."
             ),
         )
@@ -747,7 +747,6 @@ def render_special_retail_dashboard(
         _init_reference_additions_log()
         _client_count = _count_clients(spec_df)
         _client_count_display = _format_quantity(float(_client_count)) or "0"
-        _default_week_num = _client_block_default_week_from_spec(spec_df)
         st.markdown(
             (
                 "<div style='margin-top:6px;'><strong>Клиентский блок - кол-во контрагентов "
@@ -756,9 +755,7 @@ def render_special_retail_dashboard(
             ),
             unsafe_allow_html=True,
         )
-        _week_for_table = get_client_block_week_number(_default_week_num)
-        spec_for_client_block = _spec_df_for_client_block_table(spec_df, _week_for_table)
-        client_block_df = _build_client_block_table(spec_for_client_block)
+        client_block_df = _build_client_block_table(spec_df)
         _client_height = _table_height_from_rows(4)
         st.dataframe(
             client_block_df,
@@ -1780,19 +1777,15 @@ def _find_week_column_name(df: pd.DataFrame) -> str | None:
     return None
 
 
-def _spec_df_for_client_block_table(spec_df: pd.DataFrame, week_value: int) -> pd.DataFrame:
-    """Копия Спец. розницы: во всех строках столбец «Неделя» = week_value."""
-    out = spec_df.copy()
-    try:
-        week_val = int(week_value)
-    except (TypeError, ValueError):
-        week_val = 1
-    week_col = _find_week_column_name(out)
-    if week_col:
-        out[week_col] = week_val
-    else:
-        out["Неделя"] = week_val
-    return out
+_CLIENT_BLOCK_COLUMNS = [
+    "Клиент",
+    "Категория товара",
+    "Неделя",
+    "Продажи с НДС",
+    "Маржа",
+    "Количество",
+]
+_EMPTY_COUNTERPARTY_GROUPS = frozenset({"", "-", "—", "–", "―", "‑"})
 
 
 def _format_week_cell(value: object) -> str:
@@ -1811,163 +1804,87 @@ def _format_week_cell(value: object) -> str:
     return str(value).strip()
 
 
-def _display_product_level(series: pd.Series) -> pd.Series:
-    out = series.fillna("").astype(str).str.strip()
-    out = out.mask(out.eq("__NONE__"), "")
-    out = out.mask(out.str.lower().eq("nan"), "")
-    return out
-
-
-def _build_client_block_table(spec_df: pd.DataFrame) -> pd.DataFrame:
-    """Детализация продаж Спец. розницы для отображения (как в файле «Продажи»)."""
-    out_columns = [
-        "Клиент",
-        "Группа контрагентов",
-        "Товар ур.3",
-        "Товар ур.4",
-        "Неделя",
-        "Продажи с НДС",
-        "Маржа",
-        "Количество",
-    ]
-    if spec_df.empty:
-        return pd.DataFrame(columns=out_columns)
-
-    df = spec_df.copy()
-    sort_cols: list[str] = []
-    if "Клиент" in df.columns:
-        sort_cols.append("Клиент")
-    if "Группа контрагентов" in df.columns:
-        sort_cols.append("Группа контрагентов")
-    for col in ("Товар ур.3", "Товар ур.4"):
-        if col in df.columns:
-            sort_cols.append(col)
-    if sort_cols:
-        df = df.sort_values(by=sort_cols, ascending=True, kind="stable")
-
+def _resolved_client_name(df: pd.DataFrame) -> pd.Series:
+    """Итоговое имя: группа контрагентов, если она задана, иначе клиент."""
     clients = (
         df["Клиент"].fillna("").astype(str).str.strip()
         if "Клиент" in df.columns
-        else pd.Series([""] * len(df), index=df.index)
+        else pd.Series("", index=df.index)
     )
-    groups_raw = (
+    groups = (
         df["Группа контрагентов"].fillna("").astype(str).str.strip()
         if "Группа контрагентов" in df.columns
-        else pd.Series([""] * len(df), index=df.index)
+        else pd.Series("", index=df.index)
     )
-    groups = groups_raw.replace("", "-")
+    use_group = ~groups.isin(_EMPTY_COUNTERPARTY_GROUPS)
+    return groups.where(use_group, clients)
 
-    p3 = _display_product_level(df["Товар ур.3"]) if "Товар ур.3" in df.columns else pd.Series([""] * len(df), index=df.index)
-    p4 = _display_product_level(df["Товар ур.4"]) if "Товар ур.4" in df.columns else pd.Series([""] * len(df), index=df.index)
 
-    week_col = _find_week_column_name(df)
+def _client_block_aggregated(spec_df: pd.DataFrame) -> pd.DataFrame:
+    """Суммы продаж, маржи и количества по клиенту, категории и неделе."""
+    if spec_df.empty:
+        return pd.DataFrame(columns=_CLIENT_BLOCK_COLUMNS)
+
+    week_col = _find_week_column_name(spec_df)
     if week_col:
-        week_series = df[week_col].map(_format_week_cell)
+        week = spec_df[week_col].map(_format_week_cell)
     else:
-        week_series = pd.Series([""] * len(df), index=df.index, dtype=object)
+        week = pd.Series("", index=spec_df.index)
+    category = (
+        spec_df["Категория агрег."].fillna("").astype(str).str.strip()
+        if "Категория агрег." in spec_df.columns
+        else pd.Series("", index=spec_df.index)
+    )
+    frame = pd.DataFrame(
+        {
+            "Клиент": _resolved_client_name(spec_df),
+            "Категория товара": category,
+            "Неделя": week,
+            "Продажи с НДС": pd.to_numeric(
+                spec_df.get("Продажи с НДС", 0.0), errors="coerce"
+            ).fillna(0.0),
+            "Маржа": pd.to_numeric(spec_df.get("Маржа", 0.0), errors="coerce").fillna(0.0),
+            "Количество": pd.to_numeric(
+                spec_df.get("Количество", 0.0), errors="coerce"
+            ).fillna(0.0),
+        }
+    )
+    grouped = frame.groupby(
+        ["Клиент", "Категория товара", "Неделя"], dropna=False, as_index=False
+    )[["Продажи с НДС", "Маржа", "Количество"]].sum()
+    grouped["_week_sort"] = pd.to_numeric(grouped["Неделя"], errors="coerce")
+    grouped = grouped.sort_values(
+        ["Клиент", "Категория товара", "_week_sort"],
+        ascending=True,
+        kind="stable",
+        na_position="last",
+    ).drop(columns="_week_sort")
+    return grouped.reset_index(drop=True)
 
-    sales_num = pd.to_numeric(df.get("Продажи с НДС", 0.0), errors="coerce").fillna(0.0)
-    margin_num = pd.to_numeric(df.get("Маржа", 0.0), errors="coerce").fillna(0.0)
-    qty_num = pd.to_numeric(df.get("Количество", 0.0), errors="coerce").fillna(0.0)
 
+def _build_client_block_table(spec_df: pd.DataFrame) -> pd.DataFrame:
+    """Клиентский блок на экране: клиент, категория, неделя и суммы."""
+    grouped = _client_block_aggregated(spec_df)
+    if grouped.empty:
+        return pd.DataFrame(columns=_CLIENT_BLOCK_COLUMNS)
     return pd.DataFrame(
         {
-            "Клиент": clients,
-            "Группа контрагентов": groups,
-            "Товар ур.3": p3,
-            "Товар ур.4": p4,
-            "Неделя": week_series,
-            "Продажи с НДС": sales_num.map(lambda x: _format_money(float(x))),
-            "Маржа": margin_num.map(lambda x: _format_money(float(x))),
-            "Количество": qty_num.map(lambda x: _format_quantity(float(x))),
+            "Клиент": grouped["Клиент"],
+            "Категория товара": grouped["Категория товара"],
+            "Неделя": grouped["Неделя"],
+            "Продажи с НДС": grouped["Продажи с НДС"].map(lambda x: _format_money(float(x))),
+            "Маржа": grouped["Маржа"].map(lambda x: _format_money(float(x))),
+            "Количество": grouped["Количество"].map(lambda x: _format_quantity(float(x))),
         }
     )
 
 
 def _build_client_block_export_table(spec_df: pd.DataFrame) -> pd.DataFrame:
-    """Таблица для листа Excel «Клиентский блок».
-
-    Первая колонка — «Подразделение». В «Клиент» к имени добавлено подразделение (через « — »).
-    «Категория товара» — из «Категория агрег.». Колонки «Неделя» нет. Числа без текстового форматирования.
-    """
-    out_columns = [
-        "Подразделение",
-        "Клиент",
-        "Группа контрагентов",
-        "Категория товара",
-        "Товар ур.3",
-        "Товар ур.4",
-        "Продажи с НДС",
-        "Маржа",
-        "Количество",
-    ]
-    if spec_df.empty:
-        return pd.DataFrame(columns=out_columns)
-
-    df = spec_df.copy()
-    sort_cols: list[str] = []
-    if "Подразделение" in df.columns:
-        sort_cols.append("Подразделение")
-    if "Клиент" in df.columns:
-        sort_cols.append("Клиент")
-    if "Группа контрагентов" in df.columns:
-        sort_cols.append("Группа контрагентов")
-    if "Категория агрег." in df.columns:
-        sort_cols.append("Категория агрег.")
-    for col in ("Товар ур.3", "Товар ур.4"):
-        if col in df.columns:
-            sort_cols.append(col)
-    if sort_cols:
-        df = df.sort_values(by=sort_cols, ascending=True, kind="stable")
-
-    clients = (
-        df["Клиент"].fillna("").astype(str).str.strip()
-        if "Клиент" in df.columns
-        else pd.Series([""] * len(df), index=df.index)
-    )
-    subdiv = (
-        df["Подразделение"].fillna("").astype(str).str.strip()
-        if "Подразделение" in df.columns
-        else pd.Series([""] * len(df), index=df.index)
-    )
-    groups_raw = (
-        df["Группа контрагентов"].fillna("").astype(str).str.strip()
-        if "Группа контрагентов" in df.columns
-        else pd.Series([""] * len(df), index=df.index)
-    )
-    groups = groups_raw.replace("", "-")
-    category = (
-        df["Категория агрег."].fillna("").astype(str).str.strip()
-        if "Категория агрег." in df.columns
-        else pd.Series([""] * len(df), index=df.index)
-    )
-
-    p3 = _display_product_level(df["Товар ур.3"]) if "Товар ур.3" in df.columns else pd.Series([""] * len(df), index=df.index)
-    p4 = _display_product_level(df["Товар ур.4"]) if "Товар ур.4" in df.columns else pd.Series([""] * len(df), index=df.index)
-
-    sales_num = pd.to_numeric(df.get("Продажи с НДС", 0.0), errors="coerce")
-    margin_num = pd.to_numeric(df.get("Маржа", 0.0), errors="coerce")
-    qty_num = pd.to_numeric(df.get("Количество", 0.0), errors="coerce")
-
-    sub_nonempty = subdiv.astype(str).str.len() > 0
-    clients_annotated = clients.astype(str)
-    clients_annotated = clients_annotated.where(
-        ~sub_nonempty, clients_annotated + " — " + subdiv.astype(str)
-    )
-
-    return pd.DataFrame(
-        {
-            "Подразделение": subdiv,
-            "Клиент": clients_annotated,
-            "Группа контрагентов": groups,
-            "Категория товара": category,
-            "Товар ур.3": p3,
-            "Товар ур.4": p4,
-            "Продажи с НДС": sales_num,
-            "Маржа": margin_num,
-            "Количество": qty_num,
-        }
-    )
+    """Лист Excel «Клиентский блок»: те же колонки, числа без текстового формата."""
+    grouped = _client_block_aggregated(spec_df)
+    if grouped.empty:
+        return pd.DataFrame(columns=_CLIENT_BLOCK_COLUMNS)
+    return grouped[_CLIENT_BLOCK_COLUMNS].copy()
 
 
 def _vertical_metrics_lookup(table: pd.DataFrame) -> dict[str, str]:
