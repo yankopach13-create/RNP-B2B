@@ -167,6 +167,36 @@ def excise_level3_keys(sheet: pd.DataFrame) -> set[str]:
     return {key for key in keys if key and key not in {"__none__", "nan", "none"}}
 
 
+def non_excise_liquid_mask(
+    df: pd.DataFrame,
+    excise_level3_keys: set[str],
+) -> pd.Series:
+    """Строки жидкостей 25 мл, у которых маржа уменьшается на 4,25 за штуку."""
+    if df.empty or "Категория агрег." not in df.columns:
+        return pd.Series(False, index=df.index)
+    category_key = df["Категория агрег."].map(_label_key)
+    level3 = (
+        df["Товар ур.3"].map(product_level3_key)
+        if "Товар ур.3" in df.columns
+        else pd.Series("", index=df.index)
+    )
+    return category_key.eq(_label_key(LIQUID_25ML_CATEGORY)) & ~level3.isin(excise_level3_keys)
+
+
+def liquid_margin_adjustment(
+    df: pd.DataFrame,
+    excise_level3_keys: set[str],
+) -> tuple[float, float]:
+    """Количество и сумма вычета по жидкостям вне листа «Акцизные»."""
+    mask = non_excise_liquid_mask(df, excise_level3_keys)
+    if not bool(mask.any()) or "Количество" not in df.columns:
+        return 0.0, 0.0
+    quantity = float(
+        pd.to_numeric(df.loc[mask, "Количество"], errors="coerce").fillna(0.0).sum()
+    )
+    return quantity, quantity * NON_EXCISE_LIQUID_MARGIN_PER_UNIT
+
+
 def apply_non_excise_liquid_margin(
     df: pd.DataFrame,
     excise_level3_keys: set[str],
@@ -176,19 +206,12 @@ def apply_non_excise_liquid_margin(
     Товары с листа не меняются. Правка в строке, поэтому суммы по клиенту,
     подразделению и общие сходятся.
     """
-    if df.empty or "Маржа" not in df.columns or "Категория агрег." not in df.columns:
+    if df.empty or "Маржа" not in df.columns:
+        return df
+    adjust_mask = non_excise_liquid_mask(df, excise_level3_keys)
+    if not bool(adjust_mask.any()):
         return df
     result = df.copy()
-    category_key = result["Категория агрег."].map(_label_key)
-    level3 = (
-        result["Товар ур.3"].map(product_level3_key)
-        if "Товар ур.3" in result.columns
-        else pd.Series([""] * len(result), index=result.index)
-    )
-    liquid_mask = category_key.eq(_label_key(LIQUID_25ML_CATEGORY))
-    adjust_mask = liquid_mask & ~level3.isin(excise_level3_keys)
-    if not adjust_mask.any():
-        return result
     quantity = (
         pd.to_numeric(result["Количество"], errors="coerce").fillna(0.0)
         if "Количество" in result.columns

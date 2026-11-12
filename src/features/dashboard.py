@@ -24,7 +24,11 @@ from features.category_order import (
     get_razrez_source_column,
     load_category_order_list,
 )
-from features.data_prep import excise_level3_keys, prepare_dataset
+from features.data_prep import (
+    excise_level3_keys,
+    liquid_margin_adjustment,
+    prepare_dataset,
+)
 from features.factor_analysis import (
     RTRADE_CLIENTS,
     _build_factor_table,
@@ -481,6 +485,50 @@ def render_global_rnp_inputs() -> None:
         st.empty()
 
 
+def _format_adjustment_quantity(value: float) -> str:
+    """Штуки для справки о корректировке. Ноль показывается как 0."""
+    if abs(value - round(value)) < 1e-9:
+        return f"{int(round(value)):,}".replace(",", " ")
+    return f"{value:,.2f}".replace(",", " ").replace(".", ",")
+
+
+def render_liquid_margin_adjustment_note(
+    spec_df: pd.DataFrame,
+    aysa_df: pd.DataFrame,
+    excise_keys: set[str],
+) -> None:
+    """Сколько жидкости 25 мл скорректировано и на какую сумму: спецрозница и «Айса»."""
+    spec_qty, spec_amount = liquid_margin_adjustment(spec_df, excise_keys)
+    aysa_qty, aysa_amount = liquid_margin_adjustment(aysa_df, excise_keys)
+    st.markdown(
+        (
+            '<p class="rnp-liquid-adjustment-note">'
+            "Спец. розница: скорректировано "
+            f"{_format_adjustment_quantity(spec_qty)} шт "
+            f"на {_format_money(spec_amount)}"
+            "<br>ООО «Айса»: скорректировано "
+            f"{_format_adjustment_quantity(aysa_qty)} шт "
+            f"на {_format_money(aysa_amount)}"
+            "</p>"
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <style>
+        .rnp-liquid-adjustment-note {
+            font-size: 0.9rem;
+            color: #1565c0;
+            font-weight: 600;
+            margin: 0.35rem 0 0.6rem 0;
+            line-height: 1.45;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_special_retail_dashboard(
     sales_df: pd.DataFrame | None,
     contractors_df: pd.DataFrame,
@@ -601,6 +649,12 @@ def render_special_retail_dashboard(
         return
 
     render_global_rnp_inputs()
+    if excise_level3_keys is not None:
+        render_liquid_margin_adjustment_note(
+            spec_df,
+            target_client_sales_df,
+            excise_level3_keys,
+        )
     st.markdown("")
 
     toggle_label = (
