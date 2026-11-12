@@ -973,12 +973,11 @@ def _render_master_file_block(
     if table.empty:
         st.info("В мастер-файле нет строк для отображения.")
         return True
-    visible_rows = min(max(len(table), 6), 18)
     st.dataframe(
         table,
         use_container_width=True,
         hide_index=True,
-        height=_table_height_from_rows(visible_rows),
+        height=_table_height_from_rows(4),
         column_config={
             col: st.column_config.TextColumn(col) for col in table.columns
         },
@@ -1124,12 +1123,11 @@ def _render_hardware_sales_dynamics_panel(
             else "0"
         )
     )
-    visible_rows = min(max(len(hardware_table), 6), 16)
     st.dataframe(
         hardware_table,
         use_container_width=True,
         hide_index=True,
-        height=_table_height_from_rows(visible_rows),
+        height=_table_height_from_rows(4),
         column_config={
             "Товар": st.column_config.TextColumn("Товар"),
             "Продажи, шт.": st.column_config.TextColumn("Продажи, шт."),
