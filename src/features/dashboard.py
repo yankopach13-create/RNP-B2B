@@ -71,6 +71,12 @@ from data.references import (
     load_excise_liquids_reference,
     load_reference,
 )
+from features.master_file import (
+    build_master_file_table,
+    find_master_category_column,
+    master_category_options,
+    master_file_week_number,
+)
 from features.hardware_sales_dynamics import (
     HARDWARE_CATEGORY_OPTIONS,
     ReferenceProduct,
@@ -294,6 +300,7 @@ def _render_standalone_report_sections(
     categories_df: pd.DataFrame,
     category_order_df: pd.DataFrame | None,
     tradition_df: pd.DataFrame,
+    master_df: pd.DataFrame | None = None,
 ) -> bool:
     """Блоки отчёта, не требующие файла «Продажи». Возвращает True, если что-то отрисовано."""
     rendered = False
@@ -396,6 +403,9 @@ def _render_standalone_report_sections(
                 table_height=_table_height_from_rows(6),
             )
 
+    if _render_master_file_block(master_df, categories_df):
+        rendered = True
+
     if cash_inflow_df is not None:
         rendered = True
         cash_total = _calc_cash_inflow_total_for_tradition(cash_inflow_df)
@@ -459,7 +469,9 @@ def render_global_rnp_inputs() -> None:
             placeholder="",
             help=(
                 "Номер отчётной недели (1–53). Подставляется в столбец «Неделя» "
-                "клиентского блока и в имя Excel-отчёта. Если поле пустое, "
+                "клиентского блока и в имя Excel-отчёта. Если загружен мастер-файл, "
+                "при «Загрузить данные» сюда ставится неделя из него. "
+                "Значение можно изменить. Если поле пустое и мастер-файла нет, "
                 "используется неделя из загруженных продаж."
             ),
         )
@@ -541,7 +553,10 @@ def render_special_retail_dashboard(
     receivables_df: pd.DataFrame | None = None,
     cash_inflow_df: pd.DataFrame | None = None,
     coal_weights_df: pd.DataFrame | None = None,
+    master_df: pd.DataFrame | None = None,
+    master_file_token: str | None = None,
 ) -> None:
+    _prefill_client_week_from_master(master_df, master_file_token)
     has_sales = sales_df is not None and not sales_df.empty
     new_clients: list[str] = []
     unmatched_products: list[tuple[str, str, str]] = []
@@ -645,6 +660,7 @@ def render_special_retail_dashboard(
             categories_df=categories_df,
             category_order_df=category_order_df,
             tradition_df=tradition_df,
+            master_df=master_df,
         )
         if not rendered:
             st.warning("Нет блоков для расчёта по загруженным файлам.")
@@ -806,6 +822,8 @@ def render_special_retail_dashboard(
                     },
                 )
 
+        _render_master_file_block(master_df, categories_df)
+
         st.markdown("---")
         with st.container():
             st.markdown(
@@ -909,6 +927,60 @@ def render_special_retail_dashboard(
                 "Значение": st.column_config.TextColumn("Значение"),
             },
         )
+
+
+def _prefill_client_week_from_master(
+    master_df: pd.DataFrame | None,
+    file_token: str | None,
+) -> None:
+    """Ставит неделю из мастер-файла, если файл новый или поле ещё пустое.
+
+    Ручная правка сохраняется, пока не нажата «Загрузить данные»
+    и пока не подложен другой файл.
+    """
+    if not file_token:
+        return
+    week = master_file_week_number(master_df)
+    if week is None:
+        return
+    token_key = "_master_file_week_token"
+    key_missing = CLIENT_BLOCK_WEEK_INPUT_KEY not in st.session_state
+    file_changed = st.session_state.get(token_key) != file_token
+    if key_missing or file_changed:
+        st.session_state[CLIENT_BLOCK_WEEK_INPUT_KEY] = str(week)
+        st.session_state[token_key] = file_token
+
+
+def _render_master_file_block(
+    master_df: pd.DataFrame | None,
+    categories_df: pd.DataFrame,
+) -> bool:
+    """Таблица мастер-файла. Возвращает True, если блок показан."""
+    if master_df is None:
+        return False
+    st.markdown(
+        "<div style='margin-top:6px;'><strong>Мастер файл</strong></div>",
+        unsafe_allow_html=True,
+    )
+    try:
+        table = build_master_file_table(master_df, categories_df)
+    except ValueError as exc:
+        st.error(str(exc))
+        return True
+    if table.empty:
+        st.info("В мастер-файле нет строк для отображения.")
+        return True
+    visible_rows = min(max(len(table), 6), 18)
+    st.dataframe(
+        table,
+        use_container_width=True,
+        hide_index=True,
+        height=_table_height_from_rows(visible_rows),
+        column_config={
+            col: st.column_config.TextColumn(col) for col in table.columns
+        },
+    )
+    return True
 
 
 def _hardware_sales_df(df: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -1195,15 +1267,18 @@ def _render_quick_reference_update(
                 "<div style='font-size:20px; font-weight:700; text-transform:uppercase; margin:10px 0 10px 0;'>Новые товары:</div>",
                 unsafe_allow_html=True,
             )
-            header_product_col, header_controls_col = st.columns([1, 1.8], gap="small")
+            header_product_col, header_controls_col = st.columns([1, 2.6], gap="small")
             with header_product_col:
                 st.markdown("**Товар**")
             with header_controls_col:
-                c1, c2 = st.columns([1.2, 1], gap="small")
+                c1, c2, c3 = st.columns([1.15, 0.9, 1.15], gap="small")
                 c1.markdown("**Категория**")
                 c2.markdown("**Разрез (необязательно)**")
+                c3.markdown("**Мастер файл**")
+            master_options = master_category_options(categories_df)
+            has_master_column = find_master_category_column(categories_df) is not None
             for idx, (prod2, prod3, prod4) in enumerate(unmatched_products):
-                product_col, controls_col = st.columns([1, 1.8], gap="small")
+                product_col, controls_col = st.columns([1, 2.6], gap="small")
                 title = " / ".join(
                     [p for p in [prod2, prod3, prod4] if p and p != "__NONE__"]
                 )
@@ -1211,7 +1286,9 @@ def _render_quick_reference_update(
                     st.markdown(f"`{title}`")
 
                 with controls_col:
-                    category_col, razrez_col_ui = st.columns([1.2, 1], gap="small")
+                    category_col, razrez_col_ui, master_col_ui = st.columns(
+                        [1.15, 0.9, 1.15], gap="small"
+                    )
                     with category_col:
                         st.selectbox(
                             f"Категория для товара #{idx + 1}",
@@ -1228,6 +1305,19 @@ def _render_quick_reference_update(
                             key=f"new_product_razrez_{idx}",
                             label_visibility="collapsed",
                         )
+                    with master_col_ui:
+                        if has_master_column and master_options:
+                            st.selectbox(
+                                f"Мастер файл для товара #{idx + 1}",
+                                options=master_options,
+                                index=0,
+                                key=f"new_product_master_{idx}",
+                                label_visibility="collapsed",
+                            )
+                        elif has_master_column:
+                            st.caption("Нет значений")
+                        else:
+                            st.caption("Нет столбца")
 
         if not dz_pending.empty:
             st.markdown(
@@ -1306,6 +1396,7 @@ def _render_quick_reference_update(
                 product_levels,
                 st.session_state.get(f"new_product_category_{idx}", ""),
                 st.session_state.get(f"new_product_razrez_{idx}", ""),
+                st.session_state.get(f"new_product_master_{idx}", ""),
             )
             for idx, product_levels in enumerate(unmatched_products)
         ]
@@ -1314,7 +1405,7 @@ def _render_quick_reference_update(
             batch_add_products_to_reference(product_items),
             strict=True,
         ):
-            product_levels, selected_category, selected_razrez = item
+            product_levels, selected_category, selected_razrez, selected_master = item
             if ok:
                 references_changed = True
                 products_added += 1
@@ -1325,6 +1416,8 @@ def _render_quick_reference_update(
                 dist_parts = [f"Категория: {selected_category}"]
                 if str(selected_razrez).strip():
                     dist_parts.append(f"Разрез: {selected_razrez}")
+                if str(selected_master).strip():
+                    dist_parts.append(f"Мастер файл: {selected_master}")
                 _append_reference_addition(
                     "Товар",
                     product_title,

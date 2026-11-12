@@ -73,6 +73,15 @@ def _read_excel(uploaded_file, description: str) -> pd.DataFrame | None:
         return None
 
 
+def _uploaded_file_token(uploaded_file) -> str | None:
+    """Метка файла, чтобы неделю из мастер-файла подставлять только при смене файла."""
+    if uploaded_file is None:
+        return None
+    name = str(getattr(uploaded_file, "name", "") or "")
+    size = str(getattr(uploaded_file, "size", "") or "")
+    return f"{name}:{size}"
+
+
 def _render_uploader_help(image_name: str, caption: str = "") -> None:
     with st.popover("Инфо"):
         if caption:
@@ -124,6 +133,15 @@ def main() -> None:
             "Продажи",
             type=["xlsx", "xls"],
             key="sales_uploader",
+        )
+        master_file = st.file_uploader(
+            "Мастер файл",
+            type=["xlsx", "xls"],
+            key="master_file_uploader",
+            help=(
+                "Столбцы: Клиент, Группа контрагентов, Товар ур.4, Месяц, Неделя, "
+                "Продажи с НДС, Маржа, Количество."
+            ),
         )
 
     # Столбец 3: Оборачиваемость
@@ -386,6 +404,7 @@ def main() -> None:
         st.error(f"Не удалось загрузить справочники из {source}: {exc}")
         return
     sales_df = _read_excel(sales_file, "Продажи")
+    master_df = _read_excel(master_file, "Мастер файл")
     orders_df = None
     turnover_90_df = _read_excel(turnover_90_file, "Оборачиваемость 90 дней")
     turnover_7_df = _read_excel(turnover_7_file, "Оборачиваемость 7 дней")
@@ -397,6 +416,7 @@ def main() -> None:
         df is None and uploaded_file is not None
         for df, uploaded_file in (
             (sales_df, sales_file),
+            (master_df, master_file),
             (turnover_90_df, turnover_90_file),
             (turnover_7_df, turnover_7_file),
             (receivables_df, receivables_file),
@@ -409,6 +429,7 @@ def main() -> None:
         df is not None
         for df in (
             sales_df,
+            master_df,
             turnover_90_df,
             turnover_7_df,
             receivables_df,
@@ -450,6 +471,8 @@ def main() -> None:
         turnover_7_df=turnover_7_df,
         receivables_df=receivables_df,
         cash_inflow_df=cash_inflow_df,
+        master_df=master_df,
+        master_file_token=_uploaded_file_token(master_file),
     )
 
 
