@@ -2663,26 +2663,23 @@ def _build_report_excel(
         )
         sheets_to_write.append(("Традиция", tradition_table))
 
+    # Выход до ExcelWriter: пустая книга падает в openpyxl
+    # («At least one sheet must be visible»), в том числе при одном мастер-файле.
+    if not any(
+        _excel_sheet_has_content(name, frame) for name, frame in sheets_to_write
+    ) and not _has_export_data(client_block_export):
+        return None
+
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        written_count = 0
         for sheet_name, sheet_df in sheets_to_write:
-            if sheet_name == "Динамика железа":
-                if sheet_df is not None and not sheet_df.empty:
-                    _write_sheet(writer, sheet_name, sheet_df)
-                    written_count += 1
-            elif _has_export_data(sheet_df):
+            if _excel_sheet_has_content(sheet_name, sheet_df):
                 _write_sheet(writer, sheet_name, sheet_df)
-                written_count += 1
         if _has_export_data(client_block_export):
             _write_client_block_sheet_with_autofilter(
                 writer, "Клиентский блок", client_block_export
             )
-            written_count += 1
-        if written_count:
-            _autosize_columns(writer)
-        else:
-            return None
+        _autosize_columns(writer)
 
     return output.getvalue()
 
@@ -2985,6 +2982,13 @@ def _stack_tables_with_titles(
     if not stacked:
         return pd.DataFrame()
     return pd.concat(stacked, ignore_index=True, sort=False)
+
+
+def _excel_sheet_has_content(sheet_name: str, sheet_df: pd.DataFrame | None) -> bool:
+    """Лист попадёт в книгу. Динамика железа пишется при любой непустой таблице."""
+    if sheet_name == "Динамика железа":
+        return sheet_df is not None and not sheet_df.empty
+    return _has_export_data(sheet_df)
 
 
 def _has_export_data(df: pd.DataFrame) -> bool:
