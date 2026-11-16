@@ -405,6 +405,8 @@ def _render_standalone_report_sections(
                 table_height=_table_height_from_rows(6),
             )
 
+    if master_df is not None:
+        _render_master_file_week_input()
     if _render_master_file_block(
         master_df,
         categories_df,
@@ -421,26 +423,28 @@ def _render_standalone_report_sections(
     return rendered
 
 
-def render_global_rnp_inputs() -> None:
-    """Поля «Актуальная неделя» и «Кол-во заказов» над блоками РНП."""
+def _inject_rnp_input_styles(*input_keys: str) -> None:
+    """Узкие поля ввода РНП. Ключи — session_state ключи виджетов."""
+    selectors = ",\n        ".join(f".st-key-{key}" for key in input_keys)
+    inner = ",\n        ".join(
+        f".st-key-{key} [data-testid='stTextInput'], .st-key-{key} [data-testid='stNumberInput']"
+        for key in input_keys
+    )
+    inputs = ",\n        ".join(f".st-key-{key} input" for key in input_keys)
     st.markdown(
         f"""
         <style>
-        .st-key-{CLIENT_BLOCK_WEEK_INPUT_KEY},
-        .st-key-{SPEC_ORDERS_COUNT_INPUT_KEY} {{
+        {selectors} {{
             max-width: 9.75rem;
             min-width: 9.75rem;
             width: 9.75rem;
         }}
-        .st-key-{CLIENT_BLOCK_WEEK_INPUT_KEY} [data-testid="stTextInput"],
-        .st-key-{CLIENT_BLOCK_WEEK_INPUT_KEY} [data-testid="stNumberInput"],
-        .st-key-{SPEC_ORDERS_COUNT_INPUT_KEY} [data-testid="stNumberInput"] {{
+        {inner} {{
             max-width: 9.75rem;
             min-width: 9.75rem;
             width: 9.75rem;
         }}
-        .st-key-{CLIENT_BLOCK_WEEK_INPUT_KEY} input,
-        .st-key-{SPEC_ORDERS_COUNT_INPUT_KEY} input {{
+        {inputs} {{
             max-width: 9.75rem;
             min-width: 9.75rem;
             width: 9.75rem;
@@ -457,28 +461,52 @@ def render_global_rnp_inputs() -> None:
         unsafe_allow_html=True,
     )
 
+
+def _render_actual_week_field() -> None:
+    """Поле «Актуальная неделя». Пишет номер в session_state для таблиц отчёта."""
+    st.markdown(
+        '<p class="rnp-global-inputs-label">Актуальная неделя:</p>',
+        unsafe_allow_html=True,
+    )
+    if CLIENT_BLOCK_WEEK_INPUT_KEY not in st.session_state:
+        st.session_state[CLIENT_BLOCK_WEEK_INPUT_KEY] = ""
+    st.text_input(
+        "Актуальная неделя",
+        key=CLIENT_BLOCK_WEEK_INPUT_KEY,
+        label_visibility="collapsed",
+        placeholder="",
+        help=(
+            "Номер отчётной недели (1–53). Подставляется в столбец «Неделя» "
+            "клиентского блока, блока «Мастер файл» и в имя Excel-отчёта. "
+            "Если поле пустое, используется неделя из загруженных продаж, "
+            "а без продаж — 1."
+        ),
+    )
+
+
+def _render_master_file_week_input() -> None:
+    """Неделя над таблицей мастер-файла, когда полного блока РНП нет."""
+    _inject_rnp_input_styles(CLIENT_BLOCK_WEEK_INPUT_KEY)
+    week_col, _spacer_col = st.columns([1.75, 8.25], gap="large")
+    with week_col:
+        _render_actual_week_field()
+    with _spacer_col:
+        st.empty()
+
+
+def render_global_rnp_inputs() -> None:
+    """Поля «Актуальная неделя» и «Кол-во заказов» над блоками РНП."""
+    _inject_rnp_input_styles(
+        CLIENT_BLOCK_WEEK_INPUT_KEY,
+        SPEC_ORDERS_COUNT_INPUT_KEY,
+    )
+
     _week_col, _orders_col, _spacer_col = st.columns(
         [1.75, 1.75, 6.5], gap="large"
     )
 
     with _week_col:
-        st.markdown(
-            '<p class="rnp-global-inputs-label">Актуальная неделя:</p>',
-            unsafe_allow_html=True,
-        )
-        if CLIENT_BLOCK_WEEK_INPUT_KEY not in st.session_state:
-            st.session_state[CLIENT_BLOCK_WEEK_INPUT_KEY] = ""
-        st.text_input(
-            "Актуальная неделя",
-            key=CLIENT_BLOCK_WEEK_INPUT_KEY,
-            label_visibility="collapsed",
-            placeholder="",
-            help=(
-                "Номер отчётной недели (1–53). Подставляется в столбец «Неделя» "
-                "клиентского блока, блока «Мастер файл» и в имя Excel-отчёта. "
-                "Если поле пустое, используется неделя из загруженных продаж."
-            ),
-        )
+        _render_actual_week_field()
 
     with _orders_col:
         st.markdown(
