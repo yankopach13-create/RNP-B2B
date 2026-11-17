@@ -7,10 +7,14 @@ from datetime import datetime
 import pandas as pd
 
 from features.data_prep import (
+    FALLBACK_SUBCATEGORY,
     PRODUCT_COLUMNS,
+    _build_categories_map,
     _level4_match_key,
+    _normalise_category_name,
     _normalise_product_columns,
     _rename_product_level_columns,
+    apply_non_excise_liquid_margin,
     merge_product_categories,
     product_level3_key,
 )
@@ -105,6 +109,7 @@ def build_master_file_table(
     master_df: pd.DataFrame,
     categories_df: pd.DataFrame,
     week_number: int | None,
+    excise_level3_keys: set[str] | None = None,
 ) -> pd.DataFrame:
     """Суммы по конечному клиенту, месяцу, неделе и категории мастер-файла.
 
@@ -112,6 +117,9 @@ def build_master_file_table(
     Неделя — номер из поля «Актуальная неделя», в файле её нет.
     Категория берётся по «Товар ур.3» и «Товар ур.4». Если у одной пары
     несколько значений, остаётся первое непустое.
+    excise_level3_keys: названия ур.3 с верной маржой. None — маржу не менять.
+    Иначе для «Жидкость 25 мл, шт.» вне листа «Акцизные» из маржи вычитается
+    4,25 за штуку до суммирования, как в файле продаж.
     """
     if master_df is None or master_df.empty:
         return pd.DataFrame(columns=MASTER_TABLE_COLUMNS)
@@ -137,6 +145,16 @@ def build_master_file_table(
         for level3, level4 in zip(level3_values, level4_values)
     ]
     week_label = "" if week_number is None else str(int(week_number))
+    margin = _coerce_numbers(_column_series(prepared, "Маржа"))
+    quantity = _coerce_numbers(_column_series(prepared, "Количество"))
+    if excise_level3_keys is not None:
+        margin = _adjust_master_liquid_margin(
+            prepared,
+            margin,
+            quantity,
+            categories_df,
+            excise_level3_keys,
+        )
     frame = pd.DataFrame(
         {
             "Клиент": _resolved_client_name(prepared),
@@ -145,8 +163,8 @@ def build_master_file_table(
             "Продажи с НДС": _coerce_numbers(
                 _column_series(prepared, "Продажи с НДС")
             ),
-            "Маржа": _coerce_numbers(_column_series(prepared, "Маржа")),
-            "Количество": _coerce_numbers(_column_series(prepared, "Количество")),
+            "Маржа": margin,
+            "Количество": quantity,
             "Категория товара": categories,
         }
     )
@@ -178,6 +196,53 @@ def build_master_file_table(
             "Категория товара": grouped["Категория товара"],
         }
     ).reset_index(drop=True)
+
+
+def _adjust_master_liquid_margin(
+    prepared: pd.DataFrame,
+    margin: pd.Series,
+    quantity: pd.Series,
+    categories_df: pd.DataFrame,
+    excise_level3_keys: set[str],
+) -> pd.Series:
+    """Вычитает 4,25 за штуку у неакцизных жидкостей 25 мл до группировки.
+
+    Категория — «Категория агрег.» из справочника продаж, не подпись «Мастер файл».
+    Если сопоставление сбило число строк, маржа остаётся как в файле.
+    """
+    products = prepared.copy()
+    if "Товар ур.2" not in products.columns:
+        products["Товар ур.2"] = ""
+    products = _normalise_product_columns(products)
+    work = pd.DataFrame(
+        {
+            "Товар ур.2": _column_series(products, "Товар ур.2").to_numpy(),
+            "Товар ур.3": _column_series(products, "Товар ур.3").to_numpy(),
+            "Товар ур.4": _column_series(products, "Товар ур.4").to_numpy(),
+            "Маржа": margin.to_numpy(),
+            "Количество": quantity.to_numpy(),
+        }
+    )
+    categories_map = _build_categories_map(categories_df)
+    categories_map["Категория агрег."] = (
+        categories_map["Категория raw"]
+        .fillna(FALLBACK_SUBCATEGORY)
+        .map(lambda name: _normalise_category_name(str(name)))
+    )
+    merged = merge_product_categories(
+        work,
+        categories_map,
+        value_cols=("Категория агрег.",),
+    )
+    merged["Категория агрег."] = (
+        merged["Категория агрег."]
+        .fillna(FALLBACK_SUBCATEGORY)
+        .map(lambda name: _normalise_category_name(str(name)))
+    )
+    adjusted = apply_non_excise_liquid_margin(merged, excise_level3_keys)
+    if len(adjusted) != len(margin):
+        return margin
+    return pd.Series(adjusted["Маржа"].to_numpy(), index=margin.index)
 
 
 def _prepare_master_frame(master_df: pd.DataFrame) -> pd.DataFrame:

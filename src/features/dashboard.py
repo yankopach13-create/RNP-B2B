@@ -303,6 +303,7 @@ def _render_standalone_report_sections(
     category_order_df: pd.DataFrame | None,
     tradition_df: pd.DataFrame,
     master_df: pd.DataFrame | None = None,
+    excise_level3_keys: set[str] | None = None,
 ) -> bool:
     """Блоки отчёта, не требующие файла «Продажи». Возвращает True, если что-то отрисовано."""
     rendered = False
@@ -411,6 +412,7 @@ def _render_standalone_report_sections(
         master_df,
         categories_df,
         _master_file_week_number(sales_with_categories_df),
+        excise_level3_keys=excise_level3_keys,
     ):
         rendered = True
 
@@ -600,12 +602,14 @@ def render_special_retail_dashboard(
     target_client_sales_df = pd.DataFrame()
 
     excise_level3_keys: set[str] | None = None
-    if has_sales:
+    master_loaded = master_df is not None and not master_df.empty
+    if has_sales or master_loaded:
         excise_level3_keys = _load_excise_level3_keys()
         if excise_level3_keys is None:
             st.warning(
-                "Лист «Акцизные» не прочитан. Маржа жидкостей 25 мл оставлена как в файле продаж."
+                "Лист «Акцизные» не прочитан. Маржа жидкостей 25 мл оставлена как в загруженном файле."
             )
+    if has_sales:
         merged_df, new_clients, unmatched_products = prepare_dataset(
             sales_df=sales_df,
             contractors_df=contractors_df,
@@ -694,6 +698,7 @@ def render_special_retail_dashboard(
             category_order_df=category_order_df,
             tradition_df=tradition_df,
             master_df=master_df,
+            excise_level3_keys=excise_level3_keys,
         )
         if not rendered:
             st.warning("Нет блоков для расчёта по загруженным файлам.")
@@ -867,6 +872,7 @@ def render_special_retail_dashboard(
             get_client_block_week_number(
                 _client_block_default_week_from_spec(spec_df)
             ),
+            excise_level3_keys=excise_level3_keys,
         )
 
         st.markdown("---")
@@ -986,6 +992,7 @@ def _render_master_file_block(
     master_df: pd.DataFrame | None,
     categories_df: pd.DataFrame,
     week_number: int | None,
+    excise_level3_keys: set[str] | None = None,
 ) -> bool:
     """Таблица мастер-файла. Возвращает True, если блок показан."""
     if master_df is None:
@@ -995,7 +1002,12 @@ def _render_master_file_block(
         unsafe_allow_html=True,
     )
     try:
-        table = build_master_file_table(master_df, categories_df, week_number)
+        table = build_master_file_table(
+            master_df,
+            categories_df,
+            week_number,
+            excise_level3_keys=excise_level3_keys,
+        )
     except (ValueError, TypeError, KeyError) as exc:
         st.error(str(exc))
         return True
