@@ -98,6 +98,10 @@ _REFERENCE_ADDITIONS_LOG_KEY = "reference_additions_log"
 # Ключи session_state для полей над блоками загрузки (неделя сбрасывается в app при новой загрузке).
 CLIENT_BLOCK_WEEK_INPUT_KEY = "client_block_week_number_input"
 SPEC_ORDERS_COUNT_INPUT_KEY = "spec_orders_count_input"
+FINANCE_PERIOD_KIND_KEY = "finance_dz_ds_period_kind"
+FINANCE_PERIOD_VALUE_KEY = "finance_dz_ds_period_value"
+_FINANCE_TABLE_ROWS_BOTH = 3
+_FINANCE_TABLE_ROWS_SINGLE = 8
 
 AI_REPORT_VERSION = "2026-10-05-v3"
 OES_4ML_CATEGORY_LABEL = "ОЭС 4 мл, шт."
@@ -308,6 +312,11 @@ def _render_standalone_report_sections(
     """Блоки отчёта, не требующие файла «Продажи». Возвращает True, если что-то отрисовано."""
     rendered = False
 
+    both_finance_files = receivables_df is not None and cash_inflow_df is not None
+    dz_visible_rows = (
+        _FINANCE_TABLE_ROWS_BOTH if both_finance_files else _FINANCE_TABLE_ROWS_SINGLE
+    )
+
     if receivables_df is not None:
         rendered = True
         st.markdown("### Дебиторская задолженность")
@@ -330,7 +339,7 @@ def _render_standalone_report_sections(
                     dz_table,
                     use_container_width=True,
                     hide_index=True,
-                    height=_table_height_from_rows(min(len(dz_table), 8)),
+                    height=_table_height_from_rows(min(len(dz_table), dz_visible_rows)),
                     column_config={
                         "Контрагент": st.column_config.TextColumn("Контрагент"),
                         "ДЗ": st.column_config.TextColumn("ДЗ"),
@@ -356,7 +365,7 @@ def _render_standalone_report_sections(
                     dz_trad_table,
                     use_container_width=True,
                     hide_index=True,
-                    height=_table_height_from_rows(min(len(dz_trad_table), 8)),
+                    height=_table_height_from_rows(min(len(dz_trad_table), dz_visible_rows)),
                     column_config={
                         "Контрагент": st.column_config.TextColumn("Контрагент"),
                         "ДЗ": st.column_config.TextColumn("ДЗ"),
@@ -424,6 +433,10 @@ def _render_standalone_report_sections(
         else:
             cash_total = _calc_cash_inflow_total_for_tradition(cash_inflow_df)
             st.metric("Поступления ДС (Традиция)", _format_money(cash_total))
+
+    if both_finance_files:
+        rendered = True
+        _render_finance_master_block(receivables_df, cash_inflow_df)
 
     return rendered
 
@@ -2496,7 +2509,7 @@ def _render_cash_inflow_side(
         table,
         use_container_width=True,
         hide_index=True,
-        height=_table_height_from_rows(min(len(table), 8)),
+        height=_table_height_from_rows(min(len(table), _FINANCE_TABLE_ROWS_BOTH)),
         column_config={
             "Контрагент": st.column_config.TextColumn("Контрагент"),
             "Поступление": st.column_config.TextColumn("Поступление"),
@@ -2520,6 +2533,171 @@ def _render_cash_inflow_breakdown(cash_inflow_df: pd.DataFrame) -> None:
             reference_key=REF_DZ_TRAD,
             title="Поступления ДС Традиция",
             bad_reference_message="В справочнике ДЗ_Традиция нет столбца «Контрагент».",
+        )
+
+
+def _finance_period_label() -> str:
+    """Текст периода из выбора «Неделя»/«Месяц» и введённого номера."""
+    kind = str(st.session_state.get(FINANCE_PERIOD_KIND_KEY, "Неделя")).strip()
+    value = str(st.session_state.get(FINANCE_PERIOD_VALUE_KEY, "")).strip()
+    if not value:
+        return ""
+    unit = "месяц" if kind == "Месяц" else "неделя"
+    return f"{value} {unit}"
+
+
+def _render_finance_period_input() -> str:
+    """Поле периода для мастер-файла ДЗ и поступлений. Только при обоих файлах."""
+    kind_col, value_col, _spacer = st.columns([1.4, 1.4, 5.2], gap="small")
+    with kind_col:
+        st.selectbox(
+            "Период",
+            ["Неделя", "Месяц"],
+            key=FINANCE_PERIOD_KIND_KEY,
+        )
+    with value_col:
+        st.text_input(
+            "Номер периода",
+            key=FINANCE_PERIOD_VALUE_KEY,
+            placeholder="46",
+        )
+    return _finance_period_label()
+
+
+def _subdivision_column_name(reference_df: pd.DataFrame) -> str | None:
+    """Столбец подразделения: по заголовку, иначе второй столбец листа."""
+    for column in reference_df.columns:
+        if str(column).strip().casefold() == "подразделение":
+            return str(column)
+    if reference_df.shape[1] >= 2:
+        second = reference_df.columns[1]
+        if str(second).strip().casefold() != "контрагент":
+            return str(second)
+    return None
+
+
+def _finance_reference_rows(reference_key: str, direction: str) -> pd.DataFrame:
+    """Контрагенты справочника ДЗ с подразделением и направлением."""
+    empty = pd.DataFrame(columns=["Контрагент", "key", "Подразделение", "Направление"])
+    try:
+        reference_df = load_reference(reference_key)
+    except Exception:  # noqa: BLE001
+        return empty
+    if "Контрагент" not in reference_df.columns:
+        return empty
+
+    rows = pd.DataFrame({"Контрагент": reference_df["Контрагент"]})
+    subdivision_column = _subdivision_column_name(reference_df)
+    if subdivision_column is None:
+        rows["Подразделение"] = ""
+    else:
+        rows["Подразделение"] = reference_df[subdivision_column]
+    rows["Контрагент"] = rows["Контрагент"].fillna("").astype(str).str.strip()
+    rows["Подразделение"] = rows["Подразделение"].fillna("").astype(str).str.strip()
+    rows = rows[rows["Контрагент"].ne("")]
+    rows["key"] = rows["Контрагент"].map(_normalize_client_name)
+    rows = rows.drop_duplicates("key")
+    rows["Направление"] = direction
+    return rows.reset_index(drop=True)
+
+
+def _grouped_receivables_amounts(
+    receivables_df: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Сумма ДЗ по нормализованному имени контрагента."""
+    empty = pd.DataFrame(columns=["key", "ДЗ"])
+    if receivables_df is None or receivables_df.empty or receivables_df.shape[1] < 7:
+        return empty
+    source = receivables_df.iloc[:, [1, 6]].copy()
+    source.columns = ["Контрагент", "ДЗ"]
+    source["Контрагент"] = source["Контрагент"].fillna("").astype(str).str.strip()
+    source["ДЗ"] = pd.to_numeric(source["ДЗ"], errors="coerce")
+    source = source[source["Контрагент"].ne("") & source["ДЗ"].notna()]
+    if source.empty:
+        return empty
+    source["key"] = source["Контрагент"].map(_normalize_client_name)
+    return source.groupby("key", as_index=False)["ДЗ"].sum()
+
+
+def _build_finance_master_tables(
+    receivables_df: pd.DataFrame,
+    cash_inflow_df: pd.DataFrame,
+    period_label: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Две таблицы мастер-файла: ДЗ и поступления по контрагентам справочников."""
+    references = pd.concat(
+        [
+            _finance_reference_rows(REF_DZ_SPEC, "Спец.розница"),
+            _finance_reference_rows(REF_DZ_TRAD, "Традиция"),
+        ],
+        ignore_index=True,
+    )
+    columns_dz = ["Период", "Контрагент", "Подразделение", "Направление", "ДЗ"]
+    columns_cash = ["Период", "Контрагент", "Подразделение", "Направление", "Поступление"]
+    if references.empty:
+        return pd.DataFrame(columns=columns_dz), pd.DataFrame(columns=columns_cash)
+
+    receivables = _grouped_receivables_amounts(receivables_df)
+    cash_grouped, _error = _prepare_cash_inflow_grouped(cash_inflow_df)
+    if cash_grouped is None:
+        cash_grouped = pd.DataFrame(columns=["key", "Сумма"])
+
+    merged = references.merge(receivables, on="key", how="left")
+    merged = merged.merge(
+        cash_grouped[["key", "Сумма"]] if "Сумма" in cash_grouped.columns else pd.DataFrame(columns=["key", "Сумма"]),
+        on="key",
+        how="left",
+    )
+    merged["ДЗ"] = merged["ДЗ"].fillna(0.0)
+    merged["Сумма"] = merged["Сумма"].fillna(0.0)
+    base = {
+        "Период": period_label,
+        "Контрагент": merged["Контрагент"],
+        "Подразделение": merged["Подразделение"],
+        "Направление": merged["Направление"],
+    }
+    dz_table = pd.DataFrame({**base, "ДЗ": merged["ДЗ"].map(_format_money)})
+    cash_table = pd.DataFrame({**base, "Поступление": merged["Сумма"].map(_format_money)})
+    return dz_table, cash_table
+
+
+def _render_finance_master_block(
+    receivables_df: pd.DataFrame,
+    cash_inflow_df: pd.DataFrame,
+) -> None:
+    """Мастер-файл ДЗ и поступлений. Показывается только при обоих файлах."""
+    st.markdown("### Мастер файл")
+    period_label = _render_finance_period_input()
+    dz_table, cash_table = _build_finance_master_tables(
+        receivables_df,
+        cash_inflow_df,
+        period_label,
+    )
+    st.markdown("**Дебиторская задолженность**")
+    if dz_table.empty:
+        st.info("В справочниках ДЗ нет контрагентов.")
+    else:
+        st.dataframe(
+            dz_table,
+            use_container_width=True,
+            hide_index=True,
+            height=_table_height_from_rows(min(len(dz_table), 8)),
+            column_config={
+                column: st.column_config.TextColumn(column) for column in dz_table.columns
+            },
+        )
+    st.markdown("**Поступление ДС**")
+    if cash_table.empty:
+        st.info("В справочниках ДЗ нет контрагентов.")
+    else:
+        st.dataframe(
+            cash_table,
+            use_container_width=True,
+            hide_index=True,
+            height=_table_height_from_rows(min(len(cash_table), 8)),
+            column_config={
+                column: st.column_config.TextColumn(column) for column in cash_table.columns
+            },
         )
 
 
