@@ -15,6 +15,7 @@ from features.data_prep import (
     _normalise_product_columns,
     _rename_product_level_columns,
     apply_non_excise_liquid_margin,
+    liquid_margin_adjustment,
     merge_product_categories,
     product_level3_key,
 )
@@ -110,8 +111,10 @@ def build_master_file_table(
     categories_df: pd.DataFrame,
     week_number: int | None,
     excise_level3_keys: set[str] | None = None,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, float, float]:
     """Суммы по конечному клиенту, месяцу, неделе и категории мастер-файла.
+
+    Второй и третий элементы — штуки и сумма вычета маржи по жидкостям 25 мл.
 
     Конечный клиент — «Группа контрагентов», если она заполнена, иначе «Клиент».
     Неделя — номер из поля «Актуальная неделя», в файле её нет.
@@ -122,7 +125,7 @@ def build_master_file_table(
     4,25 за штуку до суммирования, как в файле продаж.
     """
     if master_df is None or master_df.empty:
-        return pd.DataFrame(columns=MASTER_TABLE_COLUMNS)
+        return pd.DataFrame(columns=MASTER_TABLE_COLUMNS), 0.0, 0.0
 
     prepared = _prepare_master_frame(master_df)
     missing = [col for col in _REQUIRED_COLUMNS if col not in prepared.columns]
@@ -147,17 +150,21 @@ def build_master_file_table(
     week_label = "" if week_number is None else str(int(week_number))
     margin = _coerce_numbers(_column_series(prepared, "Маржа"))
     quantity = _coerce_numbers(_column_series(prepared, "Количество"))
+    adjusted_qty = 0.0
+    adjusted_amount = 0.0
+    clients = _resolved_client_name(prepared)
     if excise_level3_keys is not None:
-        margin = _adjust_master_liquid_margin(
+        margin, adjusted_qty, adjusted_amount = _adjust_master_liquid_margin(
             prepared,
             margin,
             quantity,
             categories_df,
             excise_level3_keys,
+            keep_mask=clients.ne(""),
         )
     frame = pd.DataFrame(
         {
-            "Клиент": _resolved_client_name(prepared),
+            "Клиент": clients,
             "Месяц": prepared["Месяц"].map(_month_label),
             "Неделя": week_label,
             "Продажи с НДС": _coerce_numbers(
@@ -170,7 +177,7 @@ def build_master_file_table(
     )
     frame = frame[frame["Клиент"].ne("")]
     if frame.empty:
-        return pd.DataFrame(columns=MASTER_TABLE_COLUMNS)
+        return pd.DataFrame(columns=MASTER_TABLE_COLUMNS), 0.0, 0.0
 
     grouped = frame.groupby(
         ["Клиент", "Месяц", "Неделя", "Категория товара"],
@@ -195,7 +202,7 @@ def build_master_file_table(
             COLUMN_GAP_BEFORE_CATEGORY: "",
             "Категория товара": grouped["Категория товара"],
         }
-    ).reset_index(drop=True)
+    ).reset_index(drop=True), adjusted_qty, adjusted_amount
 
 
 def _adjust_master_liquid_margin(
@@ -204,11 +211,13 @@ def _adjust_master_liquid_margin(
     quantity: pd.Series,
     categories_df: pd.DataFrame,
     excise_level3_keys: set[str],
-) -> pd.Series:
+    keep_mask: pd.Series | None = None,
+) -> tuple[pd.Series, float, float]:
     """Вычитает 4,25 за штуку у неакцизных жидкостей 25 мл до группировки.
 
     Категория — «Категория агрег.» из справочника продаж, не подпись «Мастер файл».
     Если сопоставление сбило число строк, маржа остаётся как в файле.
+    Возвращает маржу, число штук и сумму вычета по строкам keep_mask.
     """
     products = prepared.copy()
     if "Товар ур.2" not in products.columns:
@@ -239,10 +248,20 @@ def _adjust_master_liquid_margin(
         .fillna(FALLBACK_SUBCATEGORY)
         .map(lambda name: _normalise_category_name(str(name)))
     )
+    visible = merged
+    if keep_mask is not None and len(keep_mask) == len(merged):
+        visible = merged.loc[keep_mask.to_numpy()].copy()
+    adjusted_qty, adjusted_amount = liquid_margin_adjustment(
+        visible, excise_level3_keys
+    )
     adjusted = apply_non_excise_liquid_margin(merged, excise_level3_keys)
     if len(adjusted) != len(margin):
-        return margin
-    return pd.Series(adjusted["Маржа"].to_numpy(), index=margin.index)
+        return margin, 0.0, 0.0
+    return (
+        pd.Series(adjusted["Маржа"].to_numpy(), index=margin.index),
+        adjusted_qty,
+        adjusted_amount,
+    )
 
 
 def _prepare_master_frame(master_df: pd.DataFrame) -> pd.DataFrame:

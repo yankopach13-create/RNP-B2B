@@ -579,6 +579,34 @@ def render_liquid_margin_adjustment_note(
     )
 
 
+def _render_master_margin_adjustment_note(quantity: float, amount: float) -> None:
+    """Сколько штук и на какую сумму скорректирована маржа в мастер-файле."""
+    st.markdown(
+        (
+            '<p class="rnp-liquid-adjustment-note">'
+            "Скорректировано "
+            f"{_format_adjustment_quantity(quantity)} шт "
+            f"на {_format_money(amount)}"
+            "</p>"
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        """
+        <style>
+        .rnp-liquid-adjustment-note {
+            font-size: 0.9rem;
+            color: #1565c0;
+            font-weight: 600;
+            margin: 0.35rem 0 0.6rem 0;
+            line-height: 1.45;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_special_retail_dashboard(
     sales_df: pd.DataFrame | None,
     contractors_df: pd.DataFrame,
@@ -1002,7 +1030,7 @@ def _render_master_file_block(
         unsafe_allow_html=True,
     )
     try:
-        table = build_master_file_table(
+        table, adjusted_qty, adjusted_amount = build_master_file_table(
             master_df,
             categories_df,
             week_number,
@@ -1011,6 +1039,8 @@ def _render_master_file_block(
     except (ValueError, TypeError, KeyError) as exc:
         st.error(str(exc))
         return True
+    if excise_level3_keys is not None:
+        _render_master_margin_adjustment_note(adjusted_qty, adjusted_amount)
     if table.empty:
         st.info("В мастер-файле нет строк для отображения.")
         return True
