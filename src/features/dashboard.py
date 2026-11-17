@@ -2537,13 +2537,8 @@ def _render_cash_inflow_breakdown(cash_inflow_df: pd.DataFrame) -> None:
 
 
 def _finance_period_label() -> str:
-    """Текст периода из выбора «Неделя»/«Месяц» и введённого номера."""
-    kind = str(st.session_state.get(FINANCE_PERIOD_KIND_KEY, "Неделя")).strip()
-    value = str(st.session_state.get(FINANCE_PERIOD_VALUE_KEY, "")).strip()
-    if not value:
-        return ""
-    unit = "месяц" if kind == "Месяц" else "неделя"
-    return f"{value} {unit}"
+    """Текст периода: только значение из поля ввода, без подписи «неделя» или «месяц»."""
+    return str(st.session_state.get(FINANCE_PERIOD_VALUE_KEY, "")).strip()
 
 
 def _render_finance_period_input() -> str:
