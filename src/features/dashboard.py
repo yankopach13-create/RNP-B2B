@@ -2668,32 +2668,40 @@ def _render_finance_master_block(
         cash_inflow_df,
         period_label,
     )
-    st.markdown("**Дебиторская задолженность**")
-    if dz_table.empty:
-        st.info("В справочниках ДЗ нет контрагентов.")
-    else:
-        st.dataframe(
-            dz_table,
-            use_container_width=True,
-            hide_index=True,
-            height=_table_height_from_rows(min(len(dz_table), 8)),
-            column_config={
-                column: st.column_config.TextColumn(column) for column in dz_table.columns
-            },
-        )
-    st.markdown("**Поступление ДС**")
-    if cash_table.empty:
-        st.info("В справочниках ДЗ нет контрагентов.")
-    else:
-        st.dataframe(
-            cash_table,
-            use_container_width=True,
-            hide_index=True,
-            height=_table_height_from_rows(min(len(cash_table), 8)),
-            column_config={
-                column: st.column_config.TextColumn(column) for column in cash_table.columns
-            },
-        )
+    table_height = _table_height_from_rows(
+        min(max(len(dz_table), len(cash_table), 1), 8)
+    )
+    col_dz, col_cash = st.columns(2, gap="medium")
+    with col_dz:
+        st.markdown("**Дебиторская задолженность**")
+        if dz_table.empty:
+            st.info("В справочниках ДЗ нет контрагентов.")
+        else:
+            st.dataframe(
+                dz_table,
+                use_container_width=True,
+                hide_index=True,
+                height=table_height,
+                column_config={
+                    column: st.column_config.TextColumn(column)
+                    for column in dz_table.columns
+                },
+            )
+    with col_cash:
+        st.markdown("**Поступление ДС**")
+        if cash_table.empty:
+            st.info("В справочниках ДЗ нет контрагентов.")
+        else:
+            st.dataframe(
+                cash_table,
+                use_container_width=True,
+                hide_index=True,
+                height=table_height,
+                column_config={
+                    column: st.column_config.TextColumn(column)
+                    for column in cash_table.columns
+                },
+            )
 
 
 def _extract_metrics_rows(
