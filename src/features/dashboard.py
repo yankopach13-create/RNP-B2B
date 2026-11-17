@@ -416,9 +416,12 @@ def _render_standalone_report_sections(
 
     if cash_inflow_df is not None:
         rendered = True
-        cash_total = _calc_cash_inflow_total_for_tradition(cash_inflow_df)
         st.markdown("### Поступления ДС")
-        st.metric("Поступления ДС (Традиция)", _format_money(cash_total))
+        if receivables_df is not None:
+            _render_cash_inflow_breakdown(cash_inflow_df)
+        else:
+            cash_total = _calc_cash_inflow_total_for_tradition(cash_inflow_df)
+            st.metric("Поступления ДС (Традиция)", _format_money(cash_total))
 
     return rendered
 
@@ -2325,15 +2328,22 @@ def _build_general_rnp_summary_table(
     return pd.DataFrame(rows)
 
 
-def _calc_cash_inflow_total_for_tradition(cash_inflow_df: pd.DataFrame | None) -> float:
-    if cash_inflow_df is None or cash_inflow_df.empty:
-        return 0.0
-    if cash_inflow_df.shape[1] < 11:
-        return 0.0
+def _prepare_cash_inflow_grouped(
+    cash_inflow_df: pd.DataFrame | None,
+) -> tuple[pd.DataFrame | None, str | None]:
+    """Суммы поступлений по контрагенту.
 
-    tradition_keys = _load_dz_reference_keys(REF_DZ_TRAD)
-    if not tradition_keys:
-        return 0.0
+    Столбцы файла: 11-й — контрагент, 9-й — сумма.
+    Возвращает таблицу с колонками key, Контрагент, Сумма.
+    """
+    empty = pd.DataFrame(columns=["key", "Контрагент", "Сумма"])
+    if cash_inflow_df is None or cash_inflow_df.empty:
+        return empty, None
+    if cash_inflow_df.shape[1] < 11:
+        return None, (
+            "В файле поступлений ДС недостаточно столбцов "
+            "(ожидались контрагент в 11-м столбце и сумма в 9-м)."
+        )
 
     source = cash_inflow_df.iloc[:, [10, 8]].copy()
     source.columns = ["Контрагент", "Сумма"]
@@ -2341,13 +2351,134 @@ def _calc_cash_inflow_total_for_tradition(cash_inflow_df: pd.DataFrame | None) -
     source["Сумма"] = pd.to_numeric(source["Сумма"], errors="coerce").fillna(0.0)
     source = source[source["Контрагент"].ne("")]
     if source.empty:
-        return 0.0
+        return empty, None
 
     source["key"] = source["Контрагент"].map(_normalize_client_name)
-    matched = source[source["key"].isin(tradition_keys)]
+    sums = source.groupby("key", as_index=False)["Сумма"].sum()
+    first_names = source.drop_duplicates("key")[["key", "Контрагент"]]
+    grouped = sums.merge(first_names, on="key", how="left")
+    return grouped, None
+
+
+def _calc_cash_inflow_total_by_reference(
+    cash_inflow_df: pd.DataFrame | None,
+    reference_key: str,
+) -> float:
+    """Итог поступлений по контрагентам одного справочника ДЗ."""
+    grouped, error = _prepare_cash_inflow_grouped(cash_inflow_df)
+    if error or grouped is None or grouped.empty:
+        return 0.0
+    keys = _load_dz_reference_keys(reference_key)
+    if not keys:
+        return 0.0
+    matched = grouped[grouped["key"].isin(keys)]
     if matched.empty:
         return 0.0
     return float(matched["Сумма"].sum())
+
+
+def _calc_cash_inflow_total_for_tradition(cash_inflow_df: pd.DataFrame | None) -> float:
+    return _calc_cash_inflow_total_by_reference(cash_inflow_df, REF_DZ_TRAD)
+
+
+def _build_cash_inflow_table_by_reference(
+    cash_inflow_df: pd.DataFrame | None,
+    reference_key: str,
+    *,
+    bad_reference_message: str,
+) -> tuple[pd.DataFrame, float, str | None]:
+    """Расшифровка поступлений: только контрагенты справочника с ненулевой суммой."""
+    grouped, error = _prepare_cash_inflow_grouped(cash_inflow_df)
+    if error or grouped is None:
+        return pd.DataFrame(), 0.0, error
+
+    try:
+        ref_df = load_reference(reference_key)
+    except Exception as exc:  # noqa: BLE001
+        return pd.DataFrame(), 0.0, f"Не удалось прочитать справочник ДЗ: {exc}"
+    if "Контрагент" not in ref_df.columns:
+        return pd.DataFrame(), 0.0, bad_reference_message
+
+    ref = ref_df[["Контрагент"]].copy()
+    ref["Контрагент"] = ref["Контрагент"].fillna("").astype(str).str.strip()
+    ref = ref[ref["Контрагент"].ne("")]
+    ref["key"] = ref["Контрагент"].map(_normalize_client_name)
+    ref = ref.drop_duplicates("key")
+
+    if grouped.empty:
+        return pd.DataFrame(columns=["Контрагент", "Поступление"]), 0.0, None
+
+    merged = ref.merge(grouped[["key", "Сумма"]], on="key", how="left")
+    merged["Сумма"] = merged["Сумма"].fillna(0.0)
+    merged = merged[merged["Сумма"].ne(0.0)]
+    total_value = float(merged["Сумма"].sum())
+    table = pd.DataFrame(
+        {
+            "Контрагент": merged["Контрагент"],
+            "Поступление": merged["Сумма"].map(_format_money),
+        }
+    )
+    return table, total_value, None
+
+
+def _render_cash_inflow_side(
+    *,
+    cash_inflow_df: pd.DataFrame,
+    reference_key: str,
+    title: str,
+    bad_reference_message: str,
+) -> None:
+    """Одна колонка расшифровки поступлений ДС."""
+    table, total, error = _build_cash_inflow_table_by_reference(
+        cash_inflow_df,
+        reference_key,
+        bad_reference_message=bad_reference_message,
+    )
+    if error:
+        st.markdown(f"**{title}**")
+        st.info(error)
+        return
+
+    st.markdown(
+        (
+            f"<strong>{title} — "
+            f'<span style="color:{_HEADER_METRIC_VALUE_COLOR};font-weight:700;">'
+            f"{_format_money(total)}</span></strong>"
+        ),
+        unsafe_allow_html=True,
+    )
+    if table.empty:
+        st.caption("Нет поступлений по контрагентам этого справочника.")
+        return
+    st.dataframe(
+        table,
+        use_container_width=True,
+        hide_index=True,
+        height=_table_height_from_rows(min(len(table), 8)),
+        column_config={
+            "Контрагент": st.column_config.TextColumn("Контрагент"),
+            "Поступление": st.column_config.TextColumn("Поступление"),
+        },
+    )
+
+
+def _render_cash_inflow_breakdown(cash_inflow_df: pd.DataFrame) -> None:
+    """Две колонки поступлений: спец розница и традиция. Только при обоих файлах."""
+    col_spec, col_trad = st.columns(2, gap="medium")
+    with col_spec:
+        _render_cash_inflow_side(
+            cash_inflow_df=cash_inflow_df,
+            reference_key=REF_DZ_SPEC,
+            title="Поступления ДС Спец розница",
+            bad_reference_message="В справочнике ДЗ_Спец_розница нет столбца «Контрагент».",
+        )
+    with col_trad:
+        _render_cash_inflow_side(
+            cash_inflow_df=cash_inflow_df,
+            reference_key=REF_DZ_TRAD,
+            title="Поступления ДС Традиция",
+            bad_reference_message="В справочнике ДЗ_Традиция нет столбца «Контрагент».",
+        )
 
 
 def _extract_metrics_rows(
@@ -2522,13 +2653,68 @@ def _build_hardware_dynamics_export_table(
 
 def _build_cash_inflow_export_table(
     cash_inflow_df: pd.DataFrame | None,
+    receivables_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    """Лист поступлений. Расшифровка по контрагентам — только если есть и файл ДЗ."""
     if cash_inflow_df is None or cash_inflow_df.empty:
         return pd.DataFrame()
-    total = _calc_cash_inflow_total_for_tradition(cash_inflow_df)
-    return pd.DataFrame(
-        [{"Показатель": "Поступления ДС (Традиция)", "Значение": _format_money(total)}]
+    if receivables_df is None:
+        total = _calc_cash_inflow_total_for_tradition(cash_inflow_df)
+        return pd.DataFrame(
+            [{"Показатель": "Поступления ДС (Традиция)", "Значение": _format_money(total)}]
+        )
+
+    sections = (
+        (REF_DZ_SPEC, "Спец розница", "В справочнике ДЗ_Спец_розница нет столбца «Контрагент»."),
+        (REF_DZ_TRAD, "Традиция", "В справочнике ДЗ_Традиция нет столбца «Контрагент»."),
     )
+    frames: list[pd.DataFrame] = []
+    for reference_key, block_name, bad_message in sections:
+        table, total, error = _build_cash_inflow_table_by_reference(
+            cash_inflow_df,
+            reference_key,
+            bad_reference_message=bad_message,
+        )
+        if error:
+            block = pd.DataFrame(
+                [
+                    {
+                        "Блок": block_name,
+                        "Контрагент": "",
+                        "Поступление": error,
+                    }
+                ]
+            )
+        elif table.empty:
+            block = pd.DataFrame(
+                [
+                    {
+                        "Блок": block_name,
+                        "Контрагент": "Итого",
+                        "Поступление": _format_money(0.0),
+                    }
+                ]
+            )
+        else:
+            rows = table.copy()
+            rows.insert(0, "Блок", "")
+            rows.loc[rows.index[0], "Блок"] = block_name
+            total_row = pd.DataFrame(
+                [
+                    {
+                        "Блок": "",
+                        "Контрагент": "Итого",
+                        "Поступление": _format_money(total),
+                    }
+                ]
+            )
+            block = pd.concat([rows, total_row], ignore_index=True)
+        frames.append(block)
+        frames.append(pd.DataFrame([{"Блок": "", "Контрагент": "", "Поступление": ""}]))
+
+    if frames:
+        frames = frames[:-1]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def _build_report_excel(
@@ -2592,7 +2778,10 @@ def _build_report_excel(
         )
         sheets_to_write.append(("Оборачиваемость", turnover_table))
 
-    cash_inflow_table = _build_cash_inflow_export_table(cash_inflow_df)
+    cash_inflow_table = _build_cash_inflow_export_table(
+        cash_inflow_df,
+        receivables_df=receivables_df,
+    )
     if _has_export_data(cash_inflow_table):
         sheets_to_write.append(("Поступления ДС", cash_inflow_table))
 
