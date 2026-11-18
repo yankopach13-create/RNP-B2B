@@ -2622,8 +2622,8 @@ def _build_finance_master_tables(
     """Две таблицы мастер-файла: ДЗ и поступления по контрагентам справочников."""
     references = pd.concat(
         [
-            _finance_reference_rows(REF_DZ_SPEC, "Спец.розница"),
-            _finance_reference_rows(REF_DZ_TRAD, "Традиция"),
+            _finance_reference_rows(REF_DZ_SPEC, "B2B Спец. Розница"),
+            _finance_reference_rows(REF_DZ_TRAD, "B2B Традиция"),
         ],
         ignore_index=True,
     )
