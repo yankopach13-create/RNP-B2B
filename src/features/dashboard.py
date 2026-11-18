@@ -2619,7 +2619,7 @@ def _build_finance_master_tables(
     cash_inflow_df: pd.DataFrame,
     period_label: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Две таблицы мастер-файла: ДЗ и поступления по контрагентам справочников."""
+    """Две таблицы мастер-файла: только контрагенты с ненулевой суммой."""
     references = pd.concat(
         [
             _finance_reference_rows(REF_DZ_SPEC, "B2B Спец. Розница"),
@@ -2645,15 +2645,27 @@ def _build_finance_master_tables(
     )
     merged["ДЗ"] = merged["ДЗ"].fillna(0.0)
     merged["Сумма"] = merged["Сумма"].fillna(0.0)
-    base = {
-        "Период": period_label,
-        "Контрагент": merged["Контрагент"],
-        "Подразделение": merged["Подразделение"],
-        "Направление": merged["Направление"],
-    }
-    dz_table = pd.DataFrame({**base, "ДЗ": merged["ДЗ"].map(_format_money)})
-    cash_table = pd.DataFrame({**base, "Поступление": merged["Сумма"].map(_format_money)})
-    return dz_table, cash_table
+    dz_rows = merged[merged["ДЗ"].ne(0.0)]
+    cash_rows = merged[merged["Сумма"].ne(0.0)]
+    dz_table = pd.DataFrame(
+        {
+            "Период": period_label,
+            "Контрагент": dz_rows["Контрагент"],
+            "Подразделение": dz_rows["Подразделение"],
+            "Направление": dz_rows["Направление"],
+            "ДЗ": dz_rows["ДЗ"].map(_format_money),
+        }
+    )
+    cash_table = pd.DataFrame(
+        {
+            "Период": period_label,
+            "Контрагент": cash_rows["Контрагент"],
+            "Подразделение": cash_rows["Подразделение"],
+            "Направление": cash_rows["Направление"],
+            "Поступление": cash_rows["Сумма"].map(_format_money),
+        }
+    )
+    return dz_table.reset_index(drop=True), cash_table.reset_index(drop=True)
 
 
 def _render_finance_master_block(
@@ -2675,7 +2687,7 @@ def _render_finance_master_block(
     with col_dz:
         st.markdown("**Дебиторская задолженность**")
         if dz_table.empty:
-            st.info("В справочниках ДЗ нет контрагентов.")
+            st.info("Нет контрагентов с ненулевой ДЗ.")
         else:
             st.dataframe(
                 dz_table,
@@ -2690,7 +2702,7 @@ def _render_finance_master_block(
     with col_cash:
         st.markdown("**Поступление ДС**")
         if cash_table.empty:
-            st.info("В справочниках ДЗ нет контрагентов.")
+            st.info("Нет контрагентов с ненулевым поступлением.")
         else:
             st.dataframe(
                 cash_table,
