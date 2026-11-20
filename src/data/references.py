@@ -27,7 +27,6 @@ DEFAULT_PRELOAD_KEYS: tuple[str, ...] = (
     REF_CONTRACTORS,
     REF_CATEGORIES,
     REF_DZ_SPEC,
-    REF_DZ_TRAD,
     REF_DZ_REMOVE,
 )
 

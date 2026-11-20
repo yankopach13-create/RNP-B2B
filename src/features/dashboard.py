@@ -11,6 +11,7 @@ from openpyxl.utils import get_column_letter
 from config.constants import (
     MINSK_REGION_COMPONENTS,
     SPECIAL_RETAIL_SUBDIVISIONS,
+    SUBDIVISION_ORDER,
 )
 from features.category_order import (
     COL_GENERAL_SPEC,
@@ -63,7 +64,6 @@ from data.references import (
     REF_CONTRACTORS,
     REF_DZ_REMOVE,
     REF_DZ_SPEC,
-    REF_DZ_TRAD,
     REF_SALES_POD_CARTRIDGE,
     append_reference_rows,
     get_reference_label,
@@ -1430,17 +1430,17 @@ def _render_quick_reference_update(
             h_name_col, h_dz_col, h_target_col = st.columns([1.4, 0.7, 0.9], gap="small")
             h_name_col.markdown("**Контрагент**")
             h_dz_col.markdown("**ДЗ**")
-            h_target_col.markdown("**Куда добавить**")
-            choices = ["спец розница", "традиция", "убрать"]
+            h_target_col.markdown("**Подразделение**")
+            choices = _dz_subdivision_choices()
             for idx, row in dz_pending.reset_index(drop=True).iterrows():
                 c1, c2, c3 = st.columns([1.4, 0.7, 0.9], gap="small")
                 c1.markdown(f"`{row['Контрагент']}`")
                 c2.markdown(_format_money(float(row["ДЗ"])))
                 c3.selectbox(
-                    f"Распределение нового контрагента ДЗ #{idx + 1}",
+                    f"Подразделение нового контрагента ДЗ #{idx + 1}",
                     options=choices,
                     index=0,
-                    key=f"dz_distribution_target_{idx}",
+                    key=f"dz_distribution_subdivision_{idx}",
                     label_visibility="collapsed",
                 )
 
@@ -1540,33 +1540,46 @@ def _render_quick_reference_update(
                 failed_messages.append(message)
 
     if not dz_pending.empty:
-        target_map = {
-            "спец розница": REF_DZ_SPEC,
-            "традиция": REF_DZ_TRAD,
-            "убрать": REF_DZ_REMOVE,
-        }
-        dz_by_ref: dict[str, list[tuple[str, str]]] = {}
+        choices = _dz_subdivision_choices()
+        remove_names: list[str] = []
+        spec_entries: list[tuple[str, str]] = []
         for idx, row in dz_pending.reset_index(drop=True).iterrows():
-            target = st.session_state.get(f"dz_distribution_target_{idx}", "спец розница")
-            ref_key = target_map[target]
-            dz_by_ref.setdefault(ref_key, []).append(
-                (str(row["Контрагент"]), target)
+            target = st.session_state.get(
+                f"dz_distribution_subdivision_{idx}",
+                choices[0],
             )
-        for ref_key, entries in dz_by_ref.items():
-            names = [name for name, _ in entries]
-            for (counterparty, target), (ok, message) in zip(
-                entries,
-                _batch_append_counterparties_to_dz_reference(ref_key, names),
+            counterparty = str(row["Контрагент"])
+            if _normalize_client_name(str(target)) == "убрать":
+                remove_names.append(counterparty)
+            else:
+                spec_entries.append((counterparty, str(target)))
+        save_batches = [
+            (REF_DZ_REMOVE, remove_names, None),
+            (REF_DZ_SPEC, [name for name, _ in spec_entries], [sub for _, sub in spec_entries]),
+        ]
+        for ref_key, names, subdivisions in save_batches:
+            if not names:
+                continue
+            for (counterparty, subdivision), (ok, message) in zip(
+                [(name, "") for name in names] if subdivisions is None else spec_entries,
+                _batch_append_counterparties_to_dz_reference(
+                    ref_key, names, subdivisions
+                ),
                 strict=True,
             ):
                 if ok and message != "Контрагент уже есть в справочнике.":
                     references_changed = True
                     dz_added += 1
+                    detail = (
+                        "Исключён из ДЗ"
+                        if ref_key == REF_DZ_REMOVE
+                        else f"Подразделение: {subdivision}"
+                    )
                     _append_reference_addition(
                         "ДЗ контрагент",
                         counterparty,
                         get_reference_title(ref_key),
-                        f"Справочник: {get_reference_label(ref_key)}; выбор: {target}",
+                        detail,
                     )
                 elif not ok:
                     failed_messages.append(message)
@@ -1599,28 +1612,28 @@ def _render_dz_counterparties_distribution(
 
     st.markdown("### Распределение новых контрагентов ДЗ")
     st.caption(
-        "Показаны только контрагенты с ДЗ > 0, которых нет в справочниках: "
-        "ДЗ_Спец_розница, ДЗ_Традиция, ДЗ_Убрать."
+        "Показаны только контрагенты с ДЗ > 0, которых нет на листе dz_spec "
+        "и в списке исключений."
     )
 
-    choices = ["спец розница", "традиция", "убрать"]
+    choices = _dz_subdivision_choices()
     with st.form("dz_counterparties_distribution_form"):
         header_name_col, header_dz_col, header_target_col = st.columns(
             [1.4, 0.7, 0.9], gap="small"
         )
         header_name_col.markdown("**Контрагент**")
         header_dz_col.markdown("**ДЗ**")
-        header_target_col.markdown("**Куда добавить**")
+        header_target_col.markdown("**Подразделение**")
 
         for idx, row in pending.reset_index(drop=True).iterrows():
             c1, c2, c3 = st.columns([1.4, 0.7, 0.9], gap="small")
             c1.markdown(f"`{row['Контрагент']}`")
             c2.markdown(_format_money(float(row["ДЗ"])))
             c3.selectbox(
-                f"Распределение контрагента ДЗ #{idx + 1}",
+                f"Подразделение контрагента ДЗ #{idx + 1}",
                 options=choices,
                 index=0,
-                key=f"dz_standalone_target_{idx}",
+                key=f"dz_standalone_subdivision_{idx}",
                 label_visibility="collapsed",
             )
 
@@ -1632,34 +1645,45 @@ def _render_dz_counterparties_distribution(
     if not apply_clicked:
         return
 
-    target_map = {
-        "спец розница": REF_DZ_SPEC,
-        "традиция": REF_DZ_TRAD,
-        "убрать": REF_DZ_REMOVE,
-    }
+    choices = _dz_subdivision_choices()
     added = 0
     failed_messages: list[str] = []
     pending_rows = pending.reset_index(drop=True)
-    dz_by_ref: dict[str, list[tuple[str, str]]] = {}
+    remove_names: list[str] = []
+    spec_entries: list[tuple[str, str]] = []
     for idx, row in pending_rows.iterrows():
-        target = st.session_state.get(f"dz_standalone_target_{idx}", "спец розница")
-        ref_key = target_map[target]
-        dz_by_ref.setdefault(ref_key, []).append((str(row["Контрагент"]), target))
+        target = st.session_state.get(f"dz_standalone_subdivision_{idx}", choices[0])
+        counterparty = str(row["Контрагент"])
+        if _normalize_client_name(str(target)) == "убрать":
+            remove_names.append(counterparty)
+        else:
+            spec_entries.append((counterparty, str(target)))
 
-    for ref_key, entries in dz_by_ref.items():
-        names = [name for name, _ in entries]
-        for (counterparty, target), (ok, message) in zip(
-            entries,
-            _batch_append_counterparties_to_dz_reference(ref_key, names),
+    save_batches = [
+        (REF_DZ_REMOVE, remove_names, None),
+        (REF_DZ_SPEC, [name for name, _ in spec_entries], [sub for _, sub in spec_entries]),
+    ]
+    for ref_key, names, subdivisions in save_batches:
+        if not names:
+            continue
+        paired = [(name, "") for name in names] if subdivisions is None else spec_entries
+        for (counterparty, subdivision), (ok, message) in zip(
+            paired,
+            _batch_append_counterparties_to_dz_reference(ref_key, names, subdivisions),
             strict=True,
         ):
             if ok and message != "Контрагент уже есть в справочнике.":
                 added += 1
+                detail = (
+                    "Исключён из ДЗ"
+                    if ref_key == REF_DZ_REMOVE
+                    else f"Подразделение: {subdivision}"
+                )
                 _append_reference_addition(
                     "ДЗ контрагент",
                     counterparty,
                     get_reference_title(ref_key),
-                    f"Справочник: {get_reference_label(ref_key)}; выбор: {target}",
+                    detail,
                 )
             elif not ok:
                 failed_messages.append(message)
@@ -1694,13 +1718,69 @@ def _collect_unassigned_dz_counterparties(
     )
     grouped = grouped.merge(first_names, on="key", how="left")
 
-    existing_keys = (
-        _load_dz_reference_keys(REF_DZ_SPEC)
-        | _load_dz_reference_keys(REF_DZ_TRAD)
-        | _load_dz_reference_keys(REF_DZ_REMOVE)
-    )
+    existing_keys = set()
+    assigned, _assigned_error = _load_dz_spec_assignments()
+    if not assigned.empty:
+        existing_keys.update(assigned["key"].tolist())
+    existing_keys.update(_load_dz_reference_keys(REF_DZ_REMOVE))
     result = grouped[~grouped["key"].isin(existing_keys)].copy()
     return result[["Контрагент", "ДЗ", "key"]]
+
+
+def _is_tradition_subdivision(value: object) -> bool:
+    """Подразделение «Традиция» на листе dz_spec, без учёта регистра."""
+    return _normalize_client_name(str(value or "")) == "традиция"
+
+
+def _load_dz_spec_assignments() -> tuple[pd.DataFrame, str | None]:
+    """Контрагенты dz_spec с подразделением. Традиция — значение этого столбца."""
+    empty = pd.DataFrame(columns=["Контрагент", "Подразделение", "key"])
+    try:
+        reference_df = load_reference(REF_DZ_SPEC)
+    except Exception as exc:  # noqa: BLE001
+        return empty, f"Не удалось прочитать справочник ДЗ: {exc}"
+    if reference_df is None or "Контрагент" not in reference_df.columns:
+        return empty, "В справочнике ДЗ нет столбца «Контрагент»."
+
+    rows = pd.DataFrame({"Контрагент": reference_df["Контрагент"]})
+    subdivision_column = _subdivision_column_name(reference_df)
+    if subdivision_column is None:
+        rows["Подразделение"] = ""
+    else:
+        rows["Подразделение"] = reference_df[subdivision_column]
+    rows["Контрагент"] = rows["Контрагент"].fillna("").astype(str).str.strip()
+    rows["Подразделение"] = rows["Подразделение"].fillna("").astype(str).str.strip()
+    rows = rows[rows["Контрагент"].ne("")]
+    rows["key"] = rows["Контрагент"].map(_normalize_client_name)
+    rows = rows.drop_duplicates("key")
+    return rows.reset_index(drop=True), None
+
+
+def _dz_assignments_for_direction(tradition: bool) -> tuple[pd.DataFrame, str | None]:
+    """Спец розница — все подразделения, кроме «Традиция»."""
+    rows, error = _load_dz_spec_assignments()
+    if error:
+        return rows, error
+    mask = rows["Подразделение"].map(_is_tradition_subdivision)
+    selected = rows.loc[mask if tradition else ~mask]
+    return selected.reset_index(drop=True), None
+
+
+def _dz_subdivision_choices() -> list[str]:
+    """Подразделения для нового контрагента: справочник, затем «убрать»."""
+    rows, _error = _load_dz_spec_assignments()
+    found = rows["Подразделение"].tolist() if not rows.empty else []
+    choices: list[str] = []
+    seen: set[str] = set()
+    for name in [*SUBDIVISION_ORDER, "Традиция", *found]:
+        label = str(name).strip()
+        key = _normalize_client_name(label)
+        if not key or key in seen or key == "убрать":
+            continue
+        seen.add(key)
+        choices.append(label)
+    choices.append("убрать")
+    return choices
 
 
 def _load_dz_reference_keys(ref_key: str) -> set[str]:
@@ -1743,6 +1823,7 @@ def _refresh_reference_session_state(
 def _batch_append_counterparties_to_dz_reference(
     ref_key: str,
     counterparties: list[str],
+    subdivisions: list[str] | None = None,
 ) -> list[tuple[bool, str]]:
     label = get_reference_label(ref_key)
     if not counterparties:
@@ -1758,6 +1839,11 @@ def _batch_append_counterparties_to_dz_reference(
         message = f"В справочнике {label} нет столбца «Контрагент»."
         return [(False, message) for _ in counterparties]
 
+    subdivision_column = _subdivision_column_name(df) if subdivisions else None
+    if subdivisions and subdivision_column is None:
+        message = f"В справочнике {label} нет столбца «Подразделение»."
+        return [(False, message) for _ in counterparties]
+
     norm_existing = set(
         df["Контрагент"]
         .fillna("")
@@ -1769,7 +1855,7 @@ def _batch_append_counterparties_to_dz_reference(
     results: list[tuple[bool, str]] = []
     rows_to_append: list[dict[str, object]] = []
 
-    for counterparty in counterparties:
+    for index, counterparty in enumerate(counterparties):
         value = str(counterparty).strip()
         if not value:
             results.append((False, "Пустое имя контрагента."))
@@ -1781,6 +1867,8 @@ def _batch_append_counterparties_to_dz_reference(
 
         new_row = {col: "" for col in df.columns}
         new_row["Контрагент"] = value
+        if subdivision_column is not None and subdivisions is not None:
+            new_row[subdivision_column] = subdivisions[index]
         rows_to_append.append(new_row)
         norm_existing.add(norm_value)
         results.append(
@@ -1811,13 +1899,24 @@ def _build_dz_table_by_reference(
     *,
     missing_file_message: str,
     bad_reference_message: str,
+    tradition: bool | None = None,
 ) -> tuple[pd.DataFrame, float, str | None]:
-    try:
-        dz_ref_df = load_reference(reference_key)
-    except Exception as exc:  # noqa: BLE001
-        return pd.DataFrame(), 0.0, f"Не удалось прочитать справочник ДЗ: {exc}"
-    if "Контрагент" not in dz_ref_df.columns:
-        return pd.DataFrame(), 0.0, bad_reference_message
+    if tradition is None:
+        try:
+            dz_ref_df = load_reference(reference_key)
+        except Exception as exc:  # noqa: BLE001
+            return pd.DataFrame(), 0.0, f"Не удалось прочитать справочник ДЗ: {exc}"
+        if "Контрагент" not in dz_ref_df.columns:
+            return pd.DataFrame(), 0.0, bad_reference_message
+        assigned = pd.DataFrame({"Контрагент": dz_ref_df["Контрагент"]})
+        assigned["Контрагент"] = assigned["Контрагент"].fillna("").astype(str).str.strip()
+        assigned = assigned[assigned["Контрагент"].ne("")]
+        assigned["key"] = assigned["Контрагент"].map(_normalize_client_name)
+        assigned = assigned.drop_duplicates("key")
+    else:
+        assigned, error = _dz_assignments_for_direction(tradition)
+        if error:
+            return pd.DataFrame(), 0.0, error
     if receivables_df is None or receivables_df.empty:
         return pd.DataFrame(), 0.0, missing_file_message
     if receivables_df.shape[1] < 7:
@@ -1831,15 +1930,7 @@ def _build_dz_table_by_reference(
         source["Контрагент"].ne("") & source["ДЗ"].notna()
     ]
     if source.empty:
-        ref_list = (
-            dz_ref_df["Контрагент"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .replace("", pd.NA)
-            .dropna()
-            .tolist()
-        )
+        ref_list = assigned["Контрагент"].tolist()
         empty_table = pd.DataFrame(
             {"Контрагент": ref_list, "ДЗ": [""] * len(ref_list)}
         )
@@ -1848,12 +1939,7 @@ def _build_dz_table_by_reference(
     source["key"] = source["Контрагент"].map(_normalize_client_name)
     grouped = source.groupby("key", as_index=False)["ДЗ"].sum()
 
-    ref = dz_ref_df[["Контрагент"]].copy()
-    ref["Контрагент"] = ref["Контрагент"].fillna("").astype(str).str.strip()
-    ref = ref[ref["Контрагент"].ne("")]
-    ref["key"] = ref["Контрагент"].map(_normalize_client_name)
-
-    merged = ref.merge(grouped, on="key", how="left")
+    merged = assigned.merge(grouped, on="key", how="left")
     merged["ДЗ"] = merged["ДЗ"].fillna(0.0)
     total_value = float(merged["ДЗ"].sum())
     table = pd.DataFrame(
@@ -1872,7 +1958,8 @@ def _build_dz_spec_table(
         receivables_df,
         REF_DZ_SPEC,
         missing_file_message="Загрузите файл «Дебиторская задолженность (62 счёт)».",
-        bad_reference_message="В справочнике ДЗ_Спец_розница нет столбца «Контрагент».",
+        bad_reference_message="В справочнике ДЗ нет столбца «Контрагент».",
+        tradition=False,
     )
 
 
@@ -1881,9 +1968,10 @@ def _build_dz_trad_table(
 ) -> tuple[pd.DataFrame, float, str | None]:
     return _build_dz_table_by_reference(
         receivables_df,
-        REF_DZ_TRAD,
+        REF_DZ_SPEC,
         missing_file_message="Загрузите файл «Дебиторская задолженность (62 счёт)».",
-        bad_reference_message="В справочнике ДЗ_Традиция нет столбца «Контрагент».",
+        bad_reference_message="В справочнике ДЗ нет столбца «Контрагент».",
+        tradition=True,
     )
 
 
@@ -1917,8 +2005,8 @@ def _build_tradition_table_with_dz(
     metrics_part = metrics_part.reindex(columns=target_columns, fill_value="")
     categories_part = categories_part.reindex(columns=target_columns, fill_value="")
 
-    dz_total, _ = _calc_dz_total_by_reference(
-        reference_key=REF_DZ_TRAD,
+    dz_total, _ = _calc_dz_total_by_direction(
+        tradition=True,
         receivables_df=receivables_df,
     )
     dz_row = {"Показатель": "ДЗ на конец недели"}
@@ -1934,6 +2022,22 @@ def _build_tradition_table_with_dz(
         [metrics_part, pd.DataFrame([dz_row]), pd.DataFrame([spacer_row]), categories_part],
         ignore_index=True,
     )
+
+
+def _calc_dz_total_by_direction(
+    *,
+    tradition: bool,
+    receivables_df: pd.DataFrame | None,
+) -> tuple[float, str | None]:
+    """Итог ДЗ: «Традиция» или все остальные подразделения листа dz_spec."""
+    _, total, error = _build_dz_table_by_reference(
+        receivables_df,
+        REF_DZ_SPEC,
+        missing_file_message="Загрузите файл «Дебиторская задолженность (62 счёт)».",
+        bad_reference_message="В справочнике ДЗ нет столбца «Контрагент».",
+        tradition=tradition,
+    )
+    return total, error
 
 
 def _calc_dz_total_by_reference(
@@ -2166,8 +2270,8 @@ def build_ai_report_table(
     )
     rtrade_sales = _safe_sum(spec_df.loc[rtrade_mask], "Продажи с НДС")
     rtrade_margin = _safe_sum(spec_df.loc[rtrade_mask], "Маржа")
-    dz_spec_total, _ = _calc_dz_total_by_reference(REF_DZ_SPEC, receivables_df)
-    dz_trad_total, _ = _calc_dz_total_by_reference(REF_DZ_TRAD, receivables_df)
+    dz_spec_total, _ = _calc_dz_total_by_direction(tradition=False, receivables_df=receivables_df)
+    dz_trad_total, _ = _calc_dz_total_by_direction(tradition=True, receivables_df=receivables_df)
 
     rows: list[dict[str, str]] = [
         {"Показатель": "Заказы", "Значение": format_spec_orders_count()},
@@ -2291,8 +2395,8 @@ def _build_general_rnp_summary_table(
         tradition_df, format_money=_format_money_compact
     )
 
-    dz_spec_total, _ = _calc_dz_total_by_reference(REF_DZ_SPEC, receivables_df)
-    dz_trad_total, _ = _calc_dz_total_by_reference(REF_DZ_TRAD, receivables_df)
+    dz_spec_total, _ = _calc_dz_total_by_direction(tradition=False, receivables_df=receivables_df)
+    dz_trad_total, _ = _calc_dz_total_by_direction(tradition=True, receivables_df=receivables_df)
     cash_inflow_trad_total = _calc_cash_inflow_total_for_tradition(cash_inflow_df)
 
     rows: list[dict[str, str]] = [
@@ -2433,7 +2537,31 @@ def _calc_cash_inflow_total_by_reference(
 
 
 def _calc_cash_inflow_total_for_tradition(cash_inflow_df: pd.DataFrame | None) -> float:
-    return _calc_cash_inflow_total_by_reference(cash_inflow_df, REF_DZ_TRAD)
+    return _calc_cash_inflow_total_by_direction(cash_inflow_df, tradition=True)
+
+
+def _dz_direction_keys(tradition: bool) -> set[str]:
+    rows, error = _dz_assignments_for_direction(tradition)
+    if error or rows.empty:
+        return set()
+    return set(rows["key"].tolist())
+
+
+def _calc_cash_inflow_total_by_direction(
+    cash_inflow_df: pd.DataFrame | None,
+    *,
+    tradition: bool,
+) -> float:
+    grouped, error = _prepare_cash_inflow_grouped(cash_inflow_df)
+    if error or grouped is None or grouped.empty:
+        return 0.0
+    keys = _dz_direction_keys(tradition)
+    if not keys:
+        return 0.0
+    matched = grouped[grouped["key"].isin(keys)]
+    if matched.empty:
+        return 0.0
+    return float(matched["Сумма"].sum())
 
 
 def _build_cash_inflow_table_by_reference(
@@ -2441,24 +2569,30 @@ def _build_cash_inflow_table_by_reference(
     reference_key: str,
     *,
     bad_reference_message: str,
+    tradition: bool | None = None,
 ) -> tuple[pd.DataFrame, float, str | None]:
-    """Расшифровка поступлений: только контрагенты справочника с ненулевой суммой."""
+    """Расшифровка поступлений: только контрагенты направления с ненулевой суммой."""
     grouped, error = _prepare_cash_inflow_grouped(cash_inflow_df)
     if error or grouped is None:
         return pd.DataFrame(), 0.0, error
 
-    try:
-        ref_df = load_reference(reference_key)
-    except Exception as exc:  # noqa: BLE001
-        return pd.DataFrame(), 0.0, f"Не удалось прочитать справочник ДЗ: {exc}"
-    if "Контрагент" not in ref_df.columns:
-        return pd.DataFrame(), 0.0, bad_reference_message
-
-    ref = ref_df[["Контрагент"]].copy()
-    ref["Контрагент"] = ref["Контрагент"].fillna("").astype(str).str.strip()
-    ref = ref[ref["Контрагент"].ne("")]
-    ref["key"] = ref["Контрагент"].map(_normalize_client_name)
-    ref = ref.drop_duplicates("key")
+    if tradition is None:
+        try:
+            ref_df = load_reference(reference_key)
+        except Exception as exc:  # noqa: BLE001
+            return pd.DataFrame(), 0.0, f"Не удалось прочитать справочник ДЗ: {exc}"
+        if "Контрагент" not in ref_df.columns:
+            return pd.DataFrame(), 0.0, bad_reference_message
+        ref = ref_df[["Контрагент"]].copy()
+        ref["Контрагент"] = ref["Контрагент"].fillna("").astype(str).str.strip()
+        ref = ref[ref["Контрагент"].ne("")]
+        ref["key"] = ref["Контрагент"].map(_normalize_client_name)
+        ref = ref.drop_duplicates("key")
+    else:
+        ref, direction_error = _dz_assignments_for_direction(tradition)
+        if direction_error:
+            return pd.DataFrame(), 0.0, direction_error
+        ref = ref[["Контрагент", "key"]].copy()
 
     if grouped.empty:
         return pd.DataFrame(columns=["Контрагент", "Поступление"]), 0.0, None
@@ -2479,15 +2613,16 @@ def _build_cash_inflow_table_by_reference(
 def _render_cash_inflow_side(
     *,
     cash_inflow_df: pd.DataFrame,
-    reference_key: str,
+    tradition: bool,
     title: str,
     bad_reference_message: str,
 ) -> None:
     """Одна колонка расшифровки поступлений ДС."""
     table, total, error = _build_cash_inflow_table_by_reference(
         cash_inflow_df,
-        reference_key,
+        REF_DZ_SPEC,
         bad_reference_message=bad_reference_message,
+        tradition=tradition,
     )
     if error:
         st.markdown(f"**{title}**")
@@ -2523,16 +2658,16 @@ def _render_cash_inflow_breakdown(cash_inflow_df: pd.DataFrame) -> None:
     with col_spec:
         _render_cash_inflow_side(
             cash_inflow_df=cash_inflow_df,
-            reference_key=REF_DZ_SPEC,
+            tradition=False,
             title="Поступления ДС Спец розница",
-            bad_reference_message="В справочнике ДЗ_Спец_розница нет столбца «Контрагент».",
+            bad_reference_message="В справочнике ДЗ нет столбца «Контрагент».",
         )
     with col_trad:
         _render_cash_inflow_side(
             cash_inflow_df=cash_inflow_df,
-            reference_key=REF_DZ_TRAD,
+            tradition=True,
             title="Поступления ДС Традиция",
-            bad_reference_message="В справочнике ДЗ_Традиция нет столбца «Контрагент».",
+            bad_reference_message="В справочнике ДЗ нет столбца «Контрагент».",
         )
 
 
@@ -2620,17 +2755,15 @@ def _build_finance_master_tables(
     period_label: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Две таблицы мастер-файла: только контрагенты с ненулевой суммой."""
-    references = pd.concat(
-        [
-            _finance_reference_rows(REF_DZ_SPEC, "B2B Спец. Розница"),
-            _finance_reference_rows(REF_DZ_TRAD, "B2B Традиция"),
-        ],
-        ignore_index=True,
-    )
+    assigned, assigned_error = _load_dz_spec_assignments()
     columns_dz = ["Период", "Контрагент", "Подразделение", "Направление", "ДЗ"]
     columns_cash = ["Период", "Контрагент", "Подразделение", "Направление", "Поступление"]
-    if references.empty:
+    if assigned_error or assigned.empty:
         return pd.DataFrame(columns=columns_dz), pd.DataFrame(columns=columns_cash)
+    references = assigned.copy()
+    references["Направление"] = references["Подразделение"].map(
+        lambda value: "B2B Традиция" if _is_tradition_subdivision(value) else "B2B Спец. Розница"
+    )
 
     receivables = _grouped_receivables_amounts(receivables_df)
     cash_grouped, _error = _prepare_cash_inflow_grouped(cash_inflow_df)
@@ -2900,15 +3033,16 @@ def _build_cash_inflow_export_table(
         )
 
     sections = (
-        (REF_DZ_SPEC, "Спец розница", "В справочнике ДЗ_Спец_розница нет столбца «Контрагент»."),
-        (REF_DZ_TRAD, "Традиция", "В справочнике ДЗ_Традиция нет столбца «Контрагент»."),
+        (False, "Спец розница"),
+        (True, "Традиция"),
     )
     frames: list[pd.DataFrame] = []
-    for reference_key, block_name, bad_message in sections:
+    for tradition, block_name in sections:
         table, total, error = _build_cash_inflow_table_by_reference(
             cash_inflow_df,
-            reference_key,
-            bad_reference_message=bad_message,
+            REF_DZ_SPEC,
+            bad_reference_message="В справочнике ДЗ нет столбца «Контрагент».",
+            tradition=tradition,
         )
         if error:
             block = pd.DataFrame(
@@ -3246,7 +3380,7 @@ def _build_tradition_export_table(
     metrics_table = metrics_raw.rename(
         columns={"Группа": "Показатель", "Показатель": "Метрика", "Значение": "Традиция"}
     )[["Метрика", "Традиция"]].rename(columns={"Метрика": "Показатель"})
-    dz_trad_total, _ = _calc_dz_total_by_reference(REF_DZ_TRAD, receivables_df)
+    dz_trad_total, _ = _calc_dz_total_by_direction(tradition=True, receivables_df=receivables_df)
     dz_row = pd.DataFrame(
         [{"Показатель": "ДЗ на конец недели", "Традиция": _format_money(dz_trad_total)}]
     )
